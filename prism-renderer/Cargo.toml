@@ -1,0 +1,15 @@
+[package]
+name = "prism-renderer"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+ash = "0.37.3"
+ash-window = "0.12.0"
+winit = "=0.28.0"
+gpu-allocator = "0.25.0"
+glam = "0.25.0"
+vk-wrappers = {path = "common/vk-wrappers"}
+mesh-structs = {path = "common/mesh-structs" }
