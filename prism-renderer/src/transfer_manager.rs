@@ -1,8 +1,7 @@
-use gpu_allocator::vulkan::Allocator;
-use vk_wrappers::structs::GPUBuffer;
+use vk_wrappers::structs::SDBuffer;
 
 struct TransferManager{
-    transfer_buffers: Vec<GPUBuffer>,
+    transfer_buffers: Vec<SDBuffer>,
 }
 
 impl TransferManager{

@@ -1,41 +1,47 @@
-use prism_renderer::{Mesh, Renderer, TriangleFaceInfo, Vertex};
+use std::sync::Arc;
+use prism_renderer::{Camera3D, Mesh, Renderer, TriangleFaceInfo, Vertex};
 use winit::dpi::LogicalSize;
-use winit::event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent};
+use winit::event::{ElementState, Event, KeyEvent, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
-use winit::platform::run_return::EventLoopExtRunReturn;
+use winit::keyboard;
 use winit::window::{Window, WindowBuilder};
 
 pub struct PrismApp {
+    camera: Camera3D,
     renderer: Renderer,
+    window: Arc<Window>,
     window_event_loop: EventLoop<()>,
-    window: Window,
 }
 
 impl PrismApp {
     pub fn new() -> Self {
-        let window_event_loop = EventLoop::new();
-        let window = WindowBuilder::new()
-            .with_title("Prism App")
-            .with_inner_size(LogicalSize {
-                width: 1920,
-                height: 1080,
-            })
-            .build(&window_event_loop)
-            .expect("Error initializing window");
-        let mut renderer = Renderer::new(&window).expect("Error initializing Renderer");
+        let window_event_loop = EventLoop::new()
+            .expect("Error initializing window event loop");
+        window_event_loop.set_control_flow(ControlFlow::Poll);
+        let window = Arc::new(
+            WindowBuilder::new()
+                .with_title("Prism App")
+                .with_inner_size(LogicalSize {
+                    width: 1920,
+                    height: 1080,
+                })
+                .build(&window_event_loop)
+                .expect("Error initializing window")
+        );
+        let mut renderer = Renderer::new(Arc::clone(&window)).expect("Error initializing Renderer");
         renderer.meshes.push(
             Mesh{
                 vertices: vec![
                     Vertex{
-                        position: glam::Vec4::new(-0.5f32, 0f32, 0f32, 1f32),
+                        position: glam::Vec4::new(-0.5f32, 0f32, -1f32, 1f32),
                         ..Default::default()
                     },
                     Vertex{
-                        position: glam::Vec4::new(0.5f32, 0f32, 0f32, 1f32),
+                        position: glam::Vec4::new(0.5f32, 0f32, -1f32, 1f32),
                         ..Default::default()
                     },
                     Vertex{
-                        position: glam::Vec4::new(0f32, 0.5f32, 0f32, 1f32),
+                        position: glam::Vec4::new(0f32, 0.5f32, -1f32, 1f32),
                         ..Default::default()
                     },
                 ],
@@ -69,41 +75,66 @@ impl PrismApp {
                 ],
             }
         );
+        let camera = Camera3D {
+            eye: glam::Vec4::new(1f32, 1f32, 1f32, 1f32),
+            dir: glam::Vec4::new(-1f32, -1f32, -1f32, 0f32),
+            up: glam::Vec4::new(0f32, 1f32, 0f32, 0f32),
+            info: glam::Vec4::new(
+                0.1f32, 10f32, 120f32 * (std::f32::consts::PI / 180f32), 16f32 / 9f32
+            ),
+        };
         Self {
             window_event_loop,
             window,
             renderer,
+            camera,
         }
     }
 
-    pub fn run(&mut self) {
-        self.window_event_loop.run_return(|event, _, control_flow| {
-            *control_flow = ControlFlow::Poll;
-            match event {
-                Event::WindowEvent {
-                    event:
-                    WindowEvent::CloseRequested
-                    | WindowEvent::KeyboardInput {
-                        input:
-                        KeyboardInput {
-                            state: ElementState::Pressed,
-                            virtual_keycode: Some(VirtualKeyCode::Escape),
+    pub fn run(mut self){
+        self.window_event_loop.run(
+            |event, elw|{
+                match event {
+                    Event::WindowEvent {
+                        event:
+                        WindowEvent::CloseRequested
+                        | WindowEvent::KeyboardInput {
+                            event:
+                            KeyEvent {
+                                state: ElementState::Pressed,
+                                logical_key: keyboard::Key::Named(keyboard::NamedKey::Escape),
+                                ..
+                            },
                             ..
                         },
                         ..
-                    },
-                    ..
-                } => *control_flow = ControlFlow::Exit,
-                Event::MainEventsCleared => {
-                    match self.renderer.draw(&self.window) {
-                        Ok(_) => {}
-                        Err(e) => {
-                            println!("renderer draw error: {}", e);
-                        }
-                    };
+                    } => {
+                        elw.exit()
+                    }
+                    Event::WindowEvent {
+                        event: WindowEvent::RedrawRequested,
+                        ..
+                    } => {
+                        self.renderer.set_camera(self.camera);
+                        match self.renderer.draw() {
+                            Ok(_) => {}
+                            Err(e) => {
+                                println!("renderer draw error: {}", e);
+                            }
+                        };
+                    }
+                    Event::AboutToWait => {
+                        self.renderer.set_camera(self.camera);
+                        match self.renderer.draw() {
+                            Ok(_) => {}
+                            Err(e) => {
+                                println!("renderer draw error: {}", e);
+                            }
+                        };
+                    }
+                    _ => (),
                 }
-                _ => (),
             }
-        });
+        ).expect("ERROR running window")
     }
 }

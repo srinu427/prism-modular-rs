@@ -1,19 +1,20 @@
-mod render_object;
+mod renderables;
 mod swapchain_manager;
 mod transfer_manager;
-mod triangle_pass;
 mod vertex_pass;
 
-use ash::vk;
-use ash::vk::CommandBufferUsageFlags;
-use gpu_allocator::vulkan::Allocator;
-use gpu_allocator::MemoryLocation;
+pub use camera_3d::{Camera3D, CameraTransforms};
 pub use mesh_structs::{Mesh, TriangleFaceInfo, Vertex};
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use swapchain_manager::SwapchainManager;
 use vertex_pass::VertexPass;
+use mesh_structs::glam;
+use vk_wrappers::vk;
 use vk_wrappers::structs::*;
 use vk_wrappers::{GraphicsPassGenerator, VKManager};
+use vk_wrappers::gpu_allocator::vulkan::Allocator;
+use vk_wrappers::gpu_allocator::MemoryLocation;
 use winit::window::Window;
 
 pub trait Drawable {
@@ -34,6 +35,7 @@ pub enum RendererError {
     CommandBuffersCreateError,
     SemaphoreCreateError,
     FenceCreateError,
+    DescriptorPoolCreateError,
     CommandBufferBeginError,
     CommandBufferEndError,
     QueueSubmitError,
@@ -44,133 +46,135 @@ pub enum RendererError {
 
 pub struct Renderer {
     pub meshes: Vec<Mesh>,
-    render_fences: Vec<vk::Fence>,
-    acquire_image_semaphores: Vec<vk::Semaphore>,
-    sync_vertex_data_semaphores: Vec<vk::Semaphore>,
-    render_semaphores: Vec<vk::Semaphore>,
-    render_command_buffers: Vec<vk::CommandBuffer>,
-    render_command_pool: vk::CommandPool,
-    transfer_command_pool: vk::CommandPool,
-    render_passes: HashMap<String, GraphicsPass>,
-    images: HashMap<String, GPUImage>,
-    image_views: HashMap<String, vk::ImageView>,
-    vertex_buffers: Vec<GPUBuffer>,
-    vertex_stage_buffers: Vec<GPUBuffer>,
-    buffers: HashMap<String, GPUBuffer>,
-    transfer_allocator: Allocator,
-    vertex_allocator: Allocator,
+    render_fences: Vec<SDFence>,
+    acquire_image_semaphores: Vec<SDSemaphore>,
+    mesh_sync_semaphores: Vec<SDSemaphore>,
+    mesh_sync_command_buffers: Vec<SDCommandBuffer>,
+    render_semaphores: Vec<SDSemaphore>,
+    render_command_buffers: Vec<SDCommandBuffer>,
+    render_command_pool: SDCommandPool,
+    transfer_command_pool: SDCommandPool,
+    render_passes: HashMap<String, SDRenderPass>,
+    vertex_descriptor_pool: SDDescriptorPool,
+    images: HashMap<String, SDImage>,
+    image_views: HashMap<String, SDImageView>,
+    vertex_buffers: Vec<SDBuffer>,
+    vertex_stage_buffers: Vec<SDBuffer>,
+    buffers: HashMap<String, SDBuffer>,
+    transfer_allocator: Arc<Mutex<Allocator>>,
+    vertex_allocator: Arc<Mutex<Allocator>>,
+    camera: Camera3D,
     swapchain_manager: SwapchainManager,
-    vk_manager: VKManager,
+    vk_manager: Arc<VKManager>,
+    window: Arc<Window>,
 }
 
 impl Renderer {
-    pub fn new(window: &Window) -> Result<Self, RendererError> {
-        let vk_manager = VKManager::new(window)
-            .ok()
-            .ok_or(RendererError::VKManagerInitError)?;
+    pub fn new(window: Arc<Window>) -> Result<Self, RendererError> {
+        let vk_manager = Arc::new(
+            VKManager::new(Arc::clone(&window))
+                .ok()
+                .ok_or(RendererError::VKManagerInitError)?,
+        );
 
         let transfer_command_pool_info = vk::CommandPoolCreateInfo {
             flags: vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
             queue_family_index: vk_manager.t_q_idx,
             ..Default::default()
         };
-        let transfer_command_pool = unsafe {
-            vk_manager
-                .device
-                .create_command_pool(&transfer_command_pool_info, None)
+        let transfer_command_pool =
+            SDCommandPool::new(Arc::clone(&vk_manager.device), transfer_command_pool_info)
                 .ok()
-                .ok_or(RendererError::CommandPoolCreateError)?
-        };
+                .ok_or(RendererError::CommandPoolCreateError)?;
 
         let render_command_pool_info = vk::CommandPoolCreateInfo {
             flags: vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
             queue_family_index: vk_manager.g_q_idx,
             ..Default::default()
         };
-        let render_command_pool = unsafe {
-            vk_manager
-                .device
-                .create_command_pool(&render_command_pool_info, None)
+        let render_command_pool =
+            SDCommandPool::new(Arc::clone(&vk_manager.device), render_command_pool_info)
                 .ok()
-                .ok_or(RendererError::CommandPoolCreateError)?
-        };
+                .ok_or(RendererError::CommandPoolCreateError)?;
 
         let mut vertex_graphics_pass =
             VertexPass::make_gpu_render_pass(&vk_manager, vk::Format::R8G8B8A8_UNORM)
                 .ok()
                 .ok_or(RendererError::GraphicsPassCreateError)?;
 
-        let render_command_buffer_info = vk::CommandBufferAllocateInfo {
-            command_pool: render_command_pool,
-            level: vk::CommandBufferLevel::PRIMARY,
-            command_buffer_count: 3,
-            ..Default::default()
-        };
-        let render_command_buffers = unsafe {
-            vk_manager
-                .device
-                .allocate_command_buffers(&render_command_buffer_info)
-                .ok()
-                .ok_or(RendererError::CommandBuffersCreateError)?
-        };
+        let mesh_sync_command_buffers = transfer_command_pool
+            .make_sd_command_buffers(vk::CommandBufferLevel::PRIMARY, 3)
+            .ok()
+            .ok_or(RendererError::CommandBuffersCreateError)?;
+
+        let render_command_buffers = render_command_pool
+            .make_sd_command_buffers(vk::CommandBufferLevel::PRIMARY, 3)
+            .ok()
+            .ok_or(RendererError::CommandBuffersCreateError)?;
 
         let transfer_allocator = vk_manager
             .make_mem_allocator()
             .ok()
             .ok_or(RendererError::AllocatorCreateError)?;
 
-        let mut vertex_allocator = vk_manager
+        let vertex_allocator = vk_manager
             .make_mem_allocator()
             .ok()
             .ok_or(RendererError::AllocatorCreateError)?;
 
+        let vertex_descriptor_pool = SDDescriptorPool::new(
+            Arc::clone(&vk_manager.device),
+            vk::DescriptorPoolCreateInfo{
+                flags: vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET,
+                max_sets: 3,
+                pool_size_count: 1,
+                p_pool_sizes: &vk::DescriptorPoolSize{
+                    ty: vk::DescriptorType::UNIFORM_BUFFER,
+                    descriptor_count: 3,
+                },
+                ..Default::default()
+            }
+        )
+            .ok()
+            .ok_or(RendererError::DescriptorPoolCreateError)?;
+
         let mut render_semaphores = Vec::with_capacity(3);
         let mut acquire_image_semaphores = Vec::with_capacity(3);
-        let mut sync_vertex_data_semaphores = Vec::with_capacity(3);
+        let mut mesh_sync_semaphores = Vec::with_capacity(3);
         let mut render_fences = Vec::with_capacity(3);
         let mut vertex_buffers = Vec::with_capacity(3);
         for _ in 0..3 {
-            let render_semaphore = unsafe {
-                vk_manager
-                    .device
-                    .create_semaphore(&vk::SemaphoreCreateInfo::default(), None)
-                    .ok()
-                    .ok_or(RendererError::SemaphoreCreateError)?
-            };
+            let render_semaphore = SDSemaphore::new(
+                Arc::clone(&vk_manager.device),
+                vk::SemaphoreCreateInfo::default(),
+            )
+            .ok()
+            .ok_or(RendererError::SemaphoreCreateError)?;
             render_semaphores.push(render_semaphore);
-            let acquire_image_semaphore = unsafe {
-                vk_manager
-                    .device
-                    .create_semaphore(&vk::SemaphoreCreateInfo::default(), None)
-                    .ok()
-                    .ok_or(RendererError::SemaphoreCreateError)?
-            };
+            let acquire_image_semaphore = SDSemaphore::new(
+                Arc::clone(&vk_manager.device),
+                vk::SemaphoreCreateInfo::default(),
+            )
+            .ok()
+            .ok_or(RendererError::SemaphoreCreateError)?;
             acquire_image_semaphores.push(acquire_image_semaphore);
-            let sync_vertex_data_semaphore = unsafe {
-                vk_manager
-                    .device
-                    .create_semaphore(&vk::SemaphoreCreateInfo::default(), None)
-                    .ok()
-                    .ok_or(RendererError::SemaphoreCreateError)?
-            };
-            sync_vertex_data_semaphores.push(sync_vertex_data_semaphore);
-            let render_fence = unsafe {
-                vk_manager
-                    .device
-                    .create_fence(
-                        &vk::FenceCreateInfo {
-                            flags: vk::FenceCreateFlags::empty(),
-                            ..Default::default()
-                        },
-                        None,
-                    )
-                    .ok()
-                    .ok_or(RendererError::FenceCreateError)?
-            };
+            let sync_vertex_data_semaphore = SDSemaphore::new(
+                Arc::clone(&vk_manager.device),
+                vk::SemaphoreCreateInfo::default(),
+            )
+            .ok()
+            .ok_or(RendererError::SemaphoreCreateError)?;
+            mesh_sync_semaphores.push(sync_vertex_data_semaphore);
+            let render_fence = SDFence::new(
+                Arc::clone(&vk_manager.device),
+                vk::FenceCreateInfo::default(),
+            )
+            .ok()
+            .ok_or(RendererError::FenceCreateError)?;
             render_fences.push(render_fence);
             let vert_buffer = vk_manager
                 .create_buffer(
-                    &mut vertex_allocator,
+                    Arc::clone(&vertex_allocator),
                     "vert_buffer",
                     1024,
                     vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
@@ -185,49 +189,52 @@ impl Renderer {
         unsafe {
             vk_manager
                 .device
-                .begin_command_buffer(render_command_buffers[0], &init_cmd_buffer_begin_info)
+                .begin_command_buffer(render_command_buffers[0].value, &init_cmd_buffer_begin_info)
                 .ok()
                 .ok_or(RendererError::CommandBufferBeginError)?;
         }
-        let swapchain_manager = unsafe {
-            SwapchainManager::new(
-                window.inner_size(),
-                &vk_manager,
-                render_command_buffers[0],
-                None,
-            )
+        let swapchain_manager = SwapchainManager::new(
+            window.inner_size(),
+            Arc::clone(&vk_manager),
+            None
+        )
             .ok()
-            .ok_or(RendererError::SwapchainManagerCreateError)?
-        };
+            .ok_or(RendererError::SwapchainManagerCreateError)?;
+        swapchain_manager.init_images(render_command_buffers[0].value);
 
         VertexPass::create_per_frame_resources(
             &vk_manager,
             &mut vertex_graphics_pass,
-            &mut vertex_allocator,
+            Arc::clone(&vertex_allocator),
             swapchain_manager.resolution,
+            &vertex_descriptor_pool
         )
         .ok()
         .ok_or(RendererError::GraphicsPassResourceCreateFailed)?;
         let _ = VertexPass::add_init_per_frame_resources_commands(
             &vk_manager,
             &vertex_graphics_pass,
-            render_command_buffers[0],
+            render_command_buffers[0].value,
         );
 
         unsafe {
             vk_manager
                 .device
-                .end_command_buffer(render_command_buffers[0])
+                .end_command_buffer(render_command_buffers[0].value)
                 .ok()
                 .ok_or(RendererError::CommandBufferEndError)?;
             let queue_submit_info = vk::SubmitInfo {
                 command_buffer_count: 1,
-                p_command_buffers: &render_command_buffers[0],
+                p_command_buffers: &render_command_buffers[0].value,
                 ..Default::default()
             };
             vk_manager
                 .device
-                .queue_submit(vk_manager.g_queue, &[queue_submit_info], render_fences[0])
+                .queue_submit(
+                    vk_manager.g_queue,
+                    &[queue_submit_info],
+                    render_fences[0].value,
+                )
                 .ok()
                 .ok_or(RendererError::QueueSubmitError)?;
         }
@@ -235,9 +242,20 @@ impl Renderer {
         let mut render_passes = HashMap::new();
         render_passes.insert("vertex".into(), vertex_graphics_pass);
 
+        let camera = Camera3D {
+            eye: glam::Vec4::new(1f32, 1f32, 1f32, 1f32),
+            dir: glam::Vec4::new(-1f32, -1f32, -1f32, 0f32),
+            up: glam::Vec4::new(0f32, 1f32, 0f32, 0f32),
+            info: glam::Vec4::new(
+                0.1f32, 10f32, 120f32 * (std::f32::consts::PI / 180f32), 16f32 / 9f32
+            ),
+        };
+
         Ok(Self {
+            window,
             vk_manager,
             swapchain_manager,
+            camera,
             render_passes,
             vertex_allocator,
             transfer_allocator,
@@ -250,153 +268,69 @@ impl Renderer {
             render_command_pool,
             render_command_buffers,
             render_semaphores,
-            sync_vertex_data_semaphores,
+            mesh_sync_command_buffers,
+            vertex_descriptor_pool,
+            mesh_sync_semaphores,
             acquire_image_semaphores,
             render_fences,
             meshes: Vec::new(),
         })
     }
 
-    pub fn refresh_resolution(&mut self, window: &Window) -> Result<(), String> {
-        unsafe {
-            self.vk_manager
-                .device
-                .wait_for_fences(
-                    &[self.render_fences[self.swapchain_manager.current_image_idx]],
-                    true,
-                    u64::MAX,
-                )
-                .ok()
-                .ok_or("Error waiting for fences")?;
-        }
-        for i in 0..3 {
-            unsafe {
-                self.vk_manager
-                    .device
-                    .reset_fences(&[self.render_fences[i]])
-                    .ok()
-                    .ok_or("Error resetting fences")?;
-                self.vk_manager
-                    .device
-                    .reset_command_buffer(
-                        self.render_command_buffers[i],
-                        vk::CommandBufferResetFlags::default(),
+    pub fn draw(&mut self) -> Result<(), String> {
+        let (next_image_idx, next_image_res) = match self.swapchain_manager.get_next_image(
+            self.acquire_image_semaphores[self.swapchain_manager.current_image_idx].value,
+        ) {
+            Ok(x) => (x, vk::Result::SUCCESS),
+            Err(e) => {
+                self.swapchain_manager = SwapchainManager::new(
+                    self.window.inner_size(),
+                    Arc::clone(&self.vk_manager),
+                    Some(&self.swapchain_manager),
+                )?;
+                let next_image_idx = self
+                    .swapchain_manager
+                    .get_next_image(
+                        self.acquire_image_semaphores[self.swapchain_manager.current_image_idx]
+                            .value,
                     )
                     .ok()
-                    .ok_or("Error resetting command buffer for vertex rendering")?;
-            }
-        }
-        let init_cmd_buffer_begin_info = vk::CommandBufferBeginInfo::default();
-        unsafe {
-            self.vk_manager
-                .device
-                .begin_command_buffer(self.render_command_buffers[0], &init_cmd_buffer_begin_info)
-                .ok()
-                .ok_or("Error starting recording command buffer for vertex rendering")?;
-        }
-        self.swapchain_manager = unsafe {
-            SwapchainManager::new(
-                window.inner_size(),
-                &self.vk_manager,
-                self.render_command_buffers[0],
-                Some(&self.swapchain_manager),
-            )
-        }?;
-        let mut vertex_render_pass = self
-            .render_passes
-            .get_mut("vertex")
-            .ok_or("Error getting render pass for vertex rendering")?;
-
-        for vertex_per_frame_resource in vertex_render_pass.per_frame_resources.drain(..) {
-            unsafe {
-                self.vk_manager.destroy_per_frame_render_pass_resources(
-                    vertex_per_frame_resource,
-                    &mut self.vertex_allocator,
-                );
-            }
-        }
-        VertexPass::create_per_frame_resources(
-            &self.vk_manager,
-            &mut vertex_render_pass,
-            &mut self.vertex_allocator,
-            self.swapchain_manager.resolution,
-        )?;
-        let _ = VertexPass::add_init_per_frame_resources_commands(
-            &self.vk_manager,
-            &mut vertex_render_pass,
-            self.render_command_buffers[0],
-        );
-
-        unsafe {
-            self.vk_manager
-                .device
-                .end_command_buffer(self.render_command_buffers[0])
-                .ok()
-                .ok_or("Error ending recording command buffer for init swapchain images")?;
-            let queue_submit_info = vk::SubmitInfo {
-                command_buffer_count: 1,
-                p_command_buffers: &self.render_command_buffers[0],
-                ..Default::default()
-            };
-            self.vk_manager
-                .device
-                .queue_submit(
-                    self.vk_manager.g_queue,
-                    &[queue_submit_info],
-                    self.render_fences[0],
-                )
-                .ok()
-                .ok_or("Error when submitting init commands")?;
-        }
-
-        Ok(())
-    }
-
-    pub fn draw(&mut self, window: &Window) -> Result<(), String> {
-        let next_image_idx = match self.swapchain_manager.get_next_image(
-            &self.vk_manager,
-            self.acquire_image_semaphores[self.swapchain_manager.current_image_idx],
-        ) {
-            Ok(x) => x,
-            Err(e) => {
-                if e == vk::Result::ERROR_OUT_OF_DATE_KHR {
-                    self.refresh_resolution(&window)?;
-                }
-                return Ok(());
+                    .ok_or("Error recreating swapchain")?;
+                (next_image_idx, e)
             }
         };
 
         let vert_buffer = &self.vertex_buffers[next_image_idx];
-        let vert_sync_cmd_buffer = unsafe {
-            self.vk_manager
-                .device
-                .allocate_command_buffers(&vk::CommandBufferAllocateInfo {
-                    command_pool: self.transfer_command_pool,
-                    level: vk::CommandBufferLevel::PRIMARY,
-                    command_buffer_count: 1,
-                    ..Default::default()
-                })
-                .ok()
-                .ok_or("Error cmd buffer to sync vertex buffer")?[0]
-        };
+        let mesh_sync_cmd_buffer = self.mesh_sync_command_buffers[next_image_idx].value;
+        self.render_fences[self.swapchain_manager.current_image_idx].wait(u64::MAX)
+            .ok()
+            .ok_or("Error waiting for fence")?;
+        self.render_fences[self.swapchain_manager.current_image_idx].reset()
+            .ok()
+            .ok_or("Error resetting fence")?;
+
         unsafe {
             self.vk_manager
                 .device
+                .reset_command_buffer(
+                    mesh_sync_cmd_buffer,
+                    vk::CommandBufferResetFlags::default()
+                )
+                .ok()
+                .ok_or("Error resetting mesh sync command buffer")?;
+            self.vk_manager
+                .device
                 .begin_command_buffer(
-                    vert_sync_cmd_buffer,
+                    mesh_sync_cmd_buffer,
                     &vk::CommandBufferBeginInfo {
                         flags: vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT,
                         ..Default::default()
                     },
                 )
                 .ok()
-                .ok_or("Error starting vertex sync comand buffer")?;
+                .ok_or("Error starting vertex sync command buffer")?;
         }
-        for x in self.vertex_stage_buffers.drain(..) {
-            let _ = self
-                .vk_manager
-                .destroy_buffer(&mut self.transfer_allocator, x);
-        }
+        self.vertex_stage_buffers.clear();
         let mut stage_vertex_buffers = Vec::with_capacity(self.meshes.len());
         let mut write_offset = 0;
         for (i, mesh) in self.meshes.iter().enumerate() {
@@ -404,7 +338,7 @@ impl Renderer {
             let mut staging_buffer = self
                 .vk_manager
                 .create_buffer(
-                    &mut self.transfer_allocator,
+                    Arc::clone(&self.transfer_allocator),
                     &format!("staging_buffer_{}", i),
                     4096,
                     vk::BufferUsageFlags::TRANSFER_SRC,
@@ -415,12 +349,14 @@ impl Renderer {
             unsafe {
                 staging_buffer
                     .allocation
+                    .as_mut()
+                    .ok_or("Error getting memory of buffer")?
                     .mapped_slice_mut()
                     .ok_or("Error writing to staging buffer")?
                     .as_mut_ptr()
                     .copy_from(mesh.vertices.as_ptr() as *const u8, write_size);
                 self.vk_manager.device.cmd_copy_buffer(
-                    vert_sync_cmd_buffer,
+                    mesh_sync_cmd_buffer,
                     staging_buffer.buffer,
                     self.vertex_buffers[next_image_idx].buffer,
                     &[vk::BufferCopy {
@@ -436,7 +372,7 @@ impl Renderer {
         unsafe {
             self.vk_manager
                 .device
-                .end_command_buffer(vert_sync_cmd_buffer)
+                .end_command_buffer(mesh_sync_cmd_buffer)
                 .ok()
                 .ok_or("Error ending vertex sync command buffer")?;
 
@@ -446,9 +382,10 @@ impl Renderer {
                     self.vk_manager.t_queue,
                     &[vk::SubmitInfo {
                         command_buffer_count: 1,
-                        p_command_buffers: &vert_sync_cmd_buffer,
+                        p_command_buffers: &mesh_sync_cmd_buffer,
                         signal_semaphore_count: 1,
-                        p_signal_semaphores: &self.sync_vertex_data_semaphores[next_image_idx],
+                        p_signal_semaphores: &self.mesh_sync_semaphores[next_image_idx]
+                            .value,
                         ..Default::default()
                     }],
                     vk::Fence::null(),
@@ -457,30 +394,69 @@ impl Renderer {
                 .ok_or("Error submitting vertex sync commands")?;
         }
 
+        let camera_transforms = CameraTransforms{
+            view: self.camera.get_view_matrix(),
+            proj: self.camera.get_perspective_matrix(),
+        };
+
         let vertex_render_pass = self
             .render_passes
-            .get("vertex")
+            .get_mut("vertex")
             .ok_or("Error getting render pass for vertex rendering")?;
 
-        let vertex_image =
-            &vertex_render_pass.per_frame_resources[next_image_idx as usize].attachments[0];
-        let vertex_command_buffer = self.render_command_buffers[next_image_idx as usize];
+        unsafe {
+            vertex_render_pass
+                .per_frame_resources[next_image_idx]
+                .uniform_buffers[0]
+                .allocation
+                .as_mut()
+                .ok_or("Uniform buffer not allocated")?
+                .mapped_slice_mut()
+                .ok_or("Error mounting uniform buffer")?
+                .as_mut_ptr()
+                .copy_from(
+                    (&camera_transforms as *const CameraTransforms) as *const u8,
+                    std::mem::size_of::<CameraTransforms>()
+                );
+            if next_image_res == vk::Result::ERROR_OUT_OF_DATE_KHR {
+                vertex_render_pass.per_frame_resources.clear();
+                VertexPass::create_per_frame_resources(
+                    &self.vk_manager,
+                    vertex_render_pass,
+                    Arc::clone(&self.vertex_allocator),
+                    self.swapchain_manager.resolution,
+                    &self.vertex_descriptor_pool,
+                )?;
+            }
+        }
+
+        let vertex_command_buffer = self.render_command_buffers[next_image_idx].value;
 
         unsafe {
             self.vk_manager
                 .device
-                .wait_for_fences(
-                    &[self.render_fences[self.swapchain_manager.current_image_idx]],
-                    true,
-                    u64::MAX,
-                )
-                .ok()
-                .ok_or("Error waiting for fences")?;
-            self.vk_manager
-                .device
-                .reset_fences(&[self.render_fences[self.swapchain_manager.current_image_idx]])
-                .ok()
-                .ok_or("Error resetting fences")?;
+                .update_descriptor_sets(
+                    &[
+                        vk::WriteDescriptorSet {
+                            dst_set: vertex_render_pass
+                                .per_frame_resources[next_image_idx]
+                                .descriptor_sets[0].value,
+                            dst_binding: 0,
+                            dst_array_element: 0,
+                            descriptor_count: 1,
+                            descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
+                            p_buffer_info: &vk::DescriptorBufferInfo {
+                                buffer: vertex_render_pass
+                                    .per_frame_resources[next_image_idx]
+                                    .uniform_buffers[0].buffer,
+                                offset: 0,
+                                range: vk::WHOLE_SIZE,
+                            },
+                            ..Default::default()
+                        }
+                    ],
+                    &[]
+                );
             self.vk_manager
                 .device
                 .reset_command_buffer(
@@ -497,10 +473,20 @@ impl Renderer {
                 .ok()
                 .ok_or("Error starting recording command buffer for vertex rendering")?;
 
+            if next_image_res == vk::Result::ERROR_OUT_OF_DATE_KHR {
+                self.swapchain_manager.init_images(vertex_command_buffer);
+                let _ = VertexPass::add_init_per_frame_resources_commands(
+                    &self.vk_manager,
+                    vertex_render_pass,
+                    vertex_command_buffer,
+                );
+            }
+
             let vertex_render_pass_begin_info = vk::RenderPassBeginInfo {
-                render_pass: vertex_render_pass.raw,
-                framebuffer: vertex_render_pass.per_frame_resources[next_image_idx as usize]
-                    .frame_buffer,
+                render_pass: vertex_render_pass.render_pass,
+                framebuffer: vertex_render_pass.per_frame_resources[next_image_idx]
+                    .frame_buffer
+                    .value,
                 render_area: vk::Rect2D {
                     offset: vk::Offset2D { x: 0, y: 0 },
                     extent: self.swapchain_manager.resolution,
@@ -522,19 +508,19 @@ impl Renderer {
             self.vk_manager.device.cmd_bind_pipeline(
                 vertex_command_buffer,
                 vk::PipelineBindPoint::GRAPHICS,
-                vertex_render_pass.pipelines[0].1,
+                vertex_render_pass.pipeline_packs[0].pipeline,
             );
 
             self.vk_manager.device.cmd_set_viewport(
                 vertex_command_buffer,
                 0,
                 &[vk::Viewport {
-                    x: 0.0,
+                    x: 0f32,
                     y: self.swapchain_manager.resolution.height as f32,
                     width: self.swapchain_manager.resolution.width as f32,
-                    height: -1.0 * self.swapchain_manager.resolution.height as f32,
-                    min_depth: 0.0,
-                    max_depth: 1.0,
+                    height: -1f32 * self.swapchain_manager.resolution.height as f32,
+                    min_depth: 0f32,
+                    max_depth: 1f32,
                 }],
             );
             self.vk_manager.device.cmd_set_scissor(
@@ -551,6 +537,15 @@ impl Renderer {
                 0,
                 &[vert_buffer.buffer],
                 &[0],
+            );
+
+            self.vk_manager.device.cmd_bind_descriptor_sets(
+                vertex_command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                vertex_render_pass.pipeline_packs[0].pipeline_layout,
+                0,
+                &[vertex_render_pass.per_frame_resources[next_image_idx].descriptor_sets[0].value],
+                &[],
             );
 
             let mut vert_offset = 0;
@@ -570,12 +565,10 @@ impl Renderer {
                 .cmd_end_render_pass(vertex_command_buffer);
         }
 
-        self.swapchain_manager.blit_to_image(
-            &self.vk_manager,
-            vertex_command_buffer,
-            vertex_image,
-            next_image_idx,
-        );
+        let vertex_image = &vertex_render_pass.per_frame_resources[next_image_idx].attachments[0];
+
+        self.swapchain_manager
+            .blit_to_image(vertex_command_buffer, vertex_image, next_image_idx);
 
         unsafe {
             self.vk_manager
@@ -585,11 +578,11 @@ impl Renderer {
                 .ok_or("Error ending recording command buffer for vertex rendering")?;
         }
 
-        let wait_semaphores = [
-            self.acquire_image_semaphores[self.swapchain_manager.current_image_idx],
-            self.sync_vertex_data_semaphores[next_image_idx],
+        let wait_semaphores = vec![
+            self.acquire_image_semaphores[self.swapchain_manager.current_image_idx].value,
+            self.mesh_sync_semaphores[next_image_idx].value,
         ];
-        let wait_stages = [
+        let wait_stages = vec![
             vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
             vk::PipelineStageFlags::VERTEX_INPUT,
         ];
@@ -601,7 +594,7 @@ impl Renderer {
             command_buffer_count: 1,
             p_command_buffers: &vertex_command_buffer,
             signal_semaphore_count: 1,
-            p_signal_semaphores: &self.render_semaphores[next_image_idx as usize],
+            p_signal_semaphores: &self.render_semaphores[next_image_idx].value,
             ..Default::default()
         };
 
@@ -611,19 +604,22 @@ impl Renderer {
                 .queue_submit(
                     self.vk_manager.g_queue,
                     &[queue_submit_info],
-                    self.render_fences[next_image_idx as usize],
+                    self.render_fences[next_image_idx].value,
                 )
                 .ok()
                 .ok_or("Error when submitting render commands")?;
         }
 
         self.swapchain_manager.present_image(
-            &self.vk_manager,
             next_image_idx,
-            vec![self.render_semaphores[next_image_idx as usize]],
+            vec![self.render_semaphores[next_image_idx].value],
         );
         self.vertex_stage_buffers = stage_vertex_buffers;
         Ok(())
+    }
+
+    pub fn set_camera(&mut self, camera3d: Camera3D) {
+        self.camera = camera3d;
     }
 }
 
@@ -631,60 +627,6 @@ impl Drop for Renderer {
     fn drop<'a>(&mut self) {
         unsafe {
             let _ = self.vk_manager.device.device_wait_idle();
-        }
-        for fence in self.render_fences.clone() {
-            unsafe { self.vk_manager.device.destroy_fence(fence, None) };
-        }
-        for semaphore in self.acquire_image_semaphores.clone() {
-            unsafe { self.vk_manager.device.destroy_semaphore(semaphore, None) };
-        }
-        for semaphore in self.sync_vertex_data_semaphores.clone() {
-            unsafe { self.vk_manager.device.destroy_semaphore(semaphore, None) };
-        }
-        for semaphore in self.render_semaphores.clone() {
-            unsafe { self.vk_manager.device.destroy_semaphore(semaphore, None) };
-        }
-        unsafe {
-            self.vk_manager
-                .device
-                .destroy_command_pool(self.render_command_pool, None);
-            self.vk_manager
-                .device
-                .destroy_command_pool(self.transfer_command_pool, None);
-        }
-        for (_, render_pass) in self.render_passes.drain() {
-            self.vk_manager
-                .destroy_gpu_render_pass(render_pass, &mut self.vertex_allocator);
-        }
-        for (_, image_view) in self.image_views.drain() {
-            unsafe {
-                self.vk_manager.device.destroy_image_view(image_view, None);
-            }
-        }
-        for (_, image) in self.images.drain() {
-            let _ = self
-                .vk_manager
-                .destroy_image(&mut self.vertex_allocator, image);
-        }
-        for (_, buffer) in self.buffers.drain() {
-            let _ = self
-                .vk_manager
-                .destroy_buffer(&mut self.vertex_allocator, buffer);
-        }
-        for buffer in self.vertex_buffers.drain(..) {
-            let _ = self
-                .vk_manager
-                .destroy_buffer(&mut self.vertex_allocator, buffer);
-        }
-        for buffer in self.vertex_stage_buffers.drain(..) {
-            let _ = self
-                .vk_manager
-                .destroy_buffer(&mut self.transfer_allocator, buffer);
-        }
-        unsafe {
-            self.vk_manager
-                .swapchain_driver
-                .destroy_swapchain(self.swapchain_manager.swapchain, None);
         }
     }
 }

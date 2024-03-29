@@ -1,14 +1,19 @@
 #version 450
 
-layout(location = 0) in vec4 inPosition;
-layout(location = 1) in vec4 inNormal;
-layout(location = 2) in vec4 inTangent;
-layout(location = 3) in vec4 inBiTangent;
-layout(location = 4) in vec4 inUVCoordinates;
+layout(location = 0) in vec4 in_position;
+layout(location = 1) in vec4 in_normal;
+layout(location = 2) in vec4 in_tangent;
+layout(location = 3) in vec4 in_uv_coordinates;
 
-layout(location = 0) out vec4 fragColor;
+layout(location = 0) out vec4 frag_color;
+
+layout(binding = 0) uniform CameraTransform{
+    mat4 view;
+    mat4 proj;
+} cam_transform;
 
 void main() {
-    gl_Position = inPosition;
-    fragColor = vec4(1.0, 1.0, 1.0, 1.0);
+    vec4 lol = cam_transform.view * in_position;
+    gl_Position = vec4(lol.x, lol.y, 1.0, 1.0);
+    frag_color = vec4(1.0, 1.0, 1.0, 1.0);
 }

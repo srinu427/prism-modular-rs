@@ -32,7 +32,7 @@ unsafe extern "system" fn vulkan_debug_callback(
 
     println!(
         "{message_severity:?}:\n\
-    {message_type:?} [{message_id_name} ({message_id_number})] : {message}\n",
+        {message_type:?} [{message_id_name} ({message_id_number})] : {message}",
     );
 
     FALSE

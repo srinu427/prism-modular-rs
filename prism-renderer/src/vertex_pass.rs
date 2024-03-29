@@ -1,6 +1,10 @@
-use ash::vk;
 use std::ffi::CString;
-use gpu_allocator::vulkan::Allocator;
+use std::mem;
+use std::sync::{Arc, Mutex};
+use camera_3d::Camera3D;
+use vk_wrappers::gpu_allocator::MemoryLocation;
+use vk_wrappers::gpu_allocator::vulkan::Allocator;
+use vk_wrappers::vk;
 use vk_wrappers::{GraphicsPassGenerator, VKManager};
 use vk_wrappers::structs::*;
 use mesh_structs::Vertex;
@@ -11,7 +15,7 @@ impl GraphicsPassGenerator for VertexPass {
     fn make_gpu_render_pass(
         vk_manager: &VKManager,
         image_format: vk::Format,
-    ) -> Result<GraphicsPass, String> {
+    ) -> Result<SDRenderPass, String> {
         let attachment_desc = vk::AttachmentDescription {
             format: image_format,
             samples: vk::SampleCountFlags::TYPE_1,
@@ -149,7 +153,31 @@ impl GraphicsPassGenerator for VertexPass {
             ..Default::default()
         };
 
+        let descriptor_layout_bindings = vec![
+            vk::DescriptorSetLayoutBinding{
+                binding: 0,
+                descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
+                descriptor_count: 1,
+                stage_flags: vk::ShaderStageFlags::VERTEX,
+                ..Default::default()
+            }
+        ];
+        let descriptor_layout_info = vk::DescriptorSetLayoutCreateInfo{
+            binding_count: descriptor_layout_bindings.len() as u32,
+            p_bindings: descriptor_layout_bindings.as_ptr(),
+            ..Default::default()
+        };
+        let descriptor_layout = unsafe{
+            vk_manager
+                .device
+                .create_descriptor_set_layout(&descriptor_layout_info, None)
+                .ok()
+                .ok_or("Error creating descriptor layout for vertex pipeline")?
+        };
+
         let pipeline_layout_info = vk::PipelineLayoutCreateInfo {
+            set_layout_count: 1,
+            p_set_layouts: &descriptor_layout,
             ..Default::default()
         };
         let pipeline_layout = unsafe {
@@ -188,24 +216,41 @@ impl GraphicsPassGenerator for VertexPass {
             vk_manager.device.destroy_shader_module(vert_shader, None);
             vk_manager.device.destroy_shader_module(frag_shader, None);
         }
-        Ok(GraphicsPass {
-            raw: render_pass,
-            pipelines: vec![(pipeline_layout, pipeline)],
-            per_frame_resources: vec![],
-        })
+
+        Ok(SDRenderPass::new(
+            Arc::clone(&vk_manager.device),
+            render_pass,
+            vec![
+                PipelinePack{
+                    pipeline,
+                    pipeline_layout,
+                    descriptor_set_layout: descriptor_layout,
+                }
+            ],
+            vec![],
+        ))
     }
 
     fn create_per_frame_resources(
         vk_manager: &VKManager,
-        graphics_pass: &mut GraphicsPass,
-        allocator: &mut Allocator,
+        graphics_pass: &mut SDRenderPass,
+        allocator: Arc<Mutex<Allocator>>,
         resolution: vk::Extent2D,
+        descriptor_pool: &SDDescriptorPool,
     ) -> Result<(), String> {
         let mut triangle_per_frame_resources = Vec::with_capacity(3);
         for i in 0..3 {
-            let img_name = format!("triangle_{}", i);
+            let cam_buffer_name = format!("vertex_cam_buffer_{}", i);
+            let cam_buffer = vk_manager.create_buffer(
+                Arc::clone(&allocator),
+                &cam_buffer_name,
+                mem::size_of::<Camera3D>() as vk::DeviceSize,
+                vk::BufferUsageFlags::UNIFORM_BUFFER,
+                MemoryLocation::CpuToGpu
+            ).ok().ok_or("Error creating uniform buffer for cam data")?;
+            let img_name = format!("vertex_attachment_{}", i);
             let attachment = vk_manager.create_2d_image(
-                allocator,
+                Arc::clone(&allocator),
                 &img_name,
                 resolution,
                 vk::Format::R8G8B8A8_UNORM,
@@ -230,34 +275,40 @@ impl GraphicsPassGenerator for VertexPass {
                 },
                 ..Default::default()
             };
-            let attachment_view = unsafe {
-                vk_manager
-                    .device
-                    .create_image_view(&attachment_view_info, None)
-                    .ok()
-                    .ok_or("Error creating image view for triangle render image")?
-            };
+            let attachment_view = SDImageView::new(
+                Arc::clone(&vk_manager.device),
+                attachment_view_info,
+            )
+                .ok()
+                .ok_or("Error creating image view for triangle render image")?;
             let frame_buffer_info = vk::FramebufferCreateInfo {
-                render_pass: graphics_pass.raw,
+                render_pass: graphics_pass.render_pass,
                 attachment_count: 1,
-                p_attachments: &attachment_view,
+                p_attachments: &attachment_view.value,
                 width: resolution.width,
                 height: resolution.height,
                 layers: 1,
                 ..Default::default()
             };
-            let frame_buffer = unsafe {
-                vk_manager
-                    .device
-                    .create_framebuffer(&frame_buffer_info, None)
-                    .ok()
-                    .ok_or("Error creating frame buffer for triangle render pipeline")?
-            };
+            let frame_buffer = SDFrameBuffer::new(
+                Arc::clone(&vk_manager.device),
+                frame_buffer_info
+            )
+                .ok()
+                .ok_or("Error creating frame buffer for triangle render pipeline")?;
+
+            let descriptor_sets = descriptor_pool.make_sd_descriptor_sets(
+                vec![graphics_pass.pipeline_packs[0].descriptor_set_layout],
+            )
+                .ok()
+                .ok_or("Error creating descriptor sets")?;
 
             triangle_per_frame_resources.push(PerFrameGraphicsPassResources {
                 attachments: vec![attachment],
                 attachment_image_views: vec![attachment_view],
                 frame_buffer,
+                uniform_buffers: vec![cam_buffer],
+                descriptor_sets,
             });
         }
 
@@ -267,7 +318,7 @@ impl GraphicsPassGenerator for VertexPass {
 
     fn add_init_per_frame_resources_commands(
         vk_manager: &VKManager,
-        graphics_pass: &GraphicsPass,
+        graphics_pass: &SDRenderPass,
         command_buffer: vk::CommandBuffer
     ) -> Result<(), String> {
         for i in 0..3 {

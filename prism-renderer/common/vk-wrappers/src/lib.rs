@@ -1,14 +1,17 @@
 pub mod structs;
 mod gpu_debug_helpers;
 
+pub use ash::vk;
+pub use gpu_allocator;
+
 use ash::extensions::ext::DebugUtils;
 use ash::extensions::khr::{Surface, Swapchain};
-use ash::vk;
 use std::cmp::min;
 use std::collections::HashMap;
 use std::ffi::{c_char, CString};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
 use gpu_allocator::vulkan::*;
 use gpu_allocator::MemoryLocation;
@@ -18,18 +21,19 @@ pub trait GraphicsPassGenerator {
     fn make_gpu_render_pass(
         vk_manager: &VKManager,
         image_format: vk::Format,
-    ) -> Result<GraphicsPass, String>;
+    ) -> Result<SDRenderPass, String>;
 
     fn create_per_frame_resources(
         vk_manager: &VKManager,
-        graphics_pass: &mut GraphicsPass,
-        allocator: &mut Allocator,
+        graphics_pass: &mut SDRenderPass,
+        allocator: Arc<Mutex<Allocator>>,
         resolution: vk::Extent2D,
+        descriptor_pool: &SDDescriptorPool,
     ) -> Result<(), String>;
 
     fn add_init_per_frame_resources_commands(
         vk_manager: &VKManager,
-        graphics_pass: &GraphicsPass,
+        graphics_pass: &SDRenderPass,
         command_buffer: vk::CommandBuffer,
     ) -> Result<(), String>;
 }
@@ -39,6 +43,8 @@ pub enum VKManagerError {
     VulkanDriverNotFound,
     DebugDriverNotFound,
     CStringInitFailed,
+    RawDisplayHandleNotFound,
+    RawWindowHandleNotFound,
     GetWindowExtensionsFailed,
     InstanceCreationFailed,
     DebugMessengerCreationFailed,
@@ -51,14 +57,8 @@ pub enum VKManagerError {
     DeviceCreationFailed,
     QueueCreationFailed,
     MemoryAllocatorCreationFailed,
-    MemoryAllocationFailed,
-    MemoryFreeFailed,
     VKBufferCreationFailed,
-    BufferMemoryBindFailed,
-    BufferDeletionFailed,
     VKImageCreationFailed,
-    ImageMemoryBindFailed,
-    ImageDeletionFailed,
     FileNotFound,
     ShaderFileOpenError,
     ShaderFileParseError,
@@ -82,11 +82,11 @@ pub struct VKManager {
     pub g_q_idx: u32,
     c_q_idx: u32,
     pub t_q_idx: u32,
-    pub device: ash::Device,
+    pub device: Arc<ash::Device>,
     pub g_queue: vk::Queue,
     c_queue: vk::Queue,
     pub t_queue: vk::Queue,
-    pub swapchain_driver: Swapchain,
+    pub swapchain_driver: Arc<Swapchain>,
 }
 
 impl VKManager {
@@ -111,7 +111,9 @@ impl VKManager {
         let mut needed_layers = vec![];
         // Replace with actual ash_window fn
         let mut needed_instance_extensions =
-            ash_window::enumerate_required_extensions(window.raw_display_handle())
+            ash_window::enumerate_required_extensions(
+                window.raw_display_handle(),
+            )
                 .ok()
                 .ok_or(VKManagerError::GetWindowExtensionsFailed)?
                 .to_vec();
@@ -335,14 +337,14 @@ impl VKManager {
     }
 
     pub fn new(
-        window: &(impl HasRawWindowHandle + HasRawDisplayHandle)
+        window: Arc<(impl HasRawWindowHandle + HasRawDisplayHandle)>
     ) -> Result<Self, VKManagerError> {
         let driver = unsafe {
             ash::Entry::load()
                 .ok()
                 .ok_or(VKManagerError::VulkanDriverNotFound)?
         };
-        let instance = unsafe { Self::create_instance(&driver, window)? };
+        let instance = unsafe { Self::create_instance(&driver, &window)? };
 
         let dbg_utils_driver = {
             if ENABLE_GPU_DEBUG {
@@ -400,92 +402,69 @@ impl VKManager {
             g_q_idx,
             c_q_idx,
             t_q_idx,
-            device,
+            device: Arc::new(device),
             g_queue,
             c_queue,
             t_queue,
-            swapchain_driver,
+            swapchain_driver: Arc::new(swapchain_driver),
         })
     }
 
-    pub fn make_mem_allocator(&self) -> Result<Allocator, VKManagerError> {
-        Allocator::new(&AllocatorCreateDesc {
-            instance: self.instance.clone(),
-            device: self.device.clone(),
-            physical_device: self.gpu.clone(),
-            debug_settings: Default::default(),
-            buffer_device_address: false,
-            allocation_sizes: Default::default(),
-        })
-            .ok()
-            .ok_or(VKManagerError::MemoryAllocatorCreationFailed)
+    pub fn make_mem_allocator(&self)
+        -> Result<Arc<Mutex<Allocator>>, VKManagerError> {
+        Ok(
+            Arc::new(
+                Mutex::new(
+                    Allocator::new(&AllocatorCreateDesc {
+                        instance: self.instance.clone(),
+                        device: (*self.device).clone(),
+                        physical_device: self.gpu.clone(),
+                        debug_settings: Default::default(),
+                        buffer_device_address: false,
+                        allocation_sizes: Default::default(),
+                    })
+                        .ok()
+                        .ok_or(VKManagerError::MemoryAllocatorCreationFailed)?
+                )
+            )
+        )
     }
 
     pub fn create_buffer(
         &self,
-        allocator: &mut Allocator,
+        allocator: Arc<Mutex<Allocator>>,
         name: &str,
         size: vk::DeviceSize,
         usage: vk::BufferUsageFlags,
         memory_location: MemoryLocation,
-    ) -> Result<GPUBuffer, VKManagerError> {
+    ) -> Result<SDBuffer, VKManagerError> {
         let buffer_create_info = vk::BufferCreateInfo {
             usage,
             size,
             sharing_mode: vk::SharingMode::EXCLUSIVE,
             ..Default::default()
         };
-        unsafe {
-            let buffer = self
-                .device
-                .create_buffer(&buffer_create_info, None)
-                .ok()
-                .ok_or(VKManagerError::VKBufferCreationFailed)?;
-            let malloc_requirements = self.device.get_buffer_memory_requirements(buffer);
-            let malloc_info = AllocationCreateDesc {
-                name,
-                requirements: malloc_requirements,
-                location: memory_location,
-                linear: true,
-                allocation_scheme: AllocationScheme::GpuAllocatorManaged,
-            };
-            let mem_allocation = allocator
-                .allocate(&malloc_info)
-                .ok()
-                .ok_or(VKManagerError::MemoryAllocationFailed)?;
-            self.device
-                .bind_buffer_memory(buffer, mem_allocation.memory(), mem_allocation.offset())
-                .ok()
-                .ok_or(VKManagerError::BufferMemoryBindFailed)?;
-            Ok(GPUBuffer {
-                buffer,
-                allocation: mem_allocation,
-                current_size: size,
-            })
-        }
-    }
 
-    pub fn destroy_buffer(
-        &self,
-        allocator: &mut Allocator,
-        buffer: GPUBuffer,
-    ) -> Result<(), VKManagerError> {
-        unsafe { self.device.destroy_buffer(buffer.buffer, None) };
-        allocator
-            .free(buffer.allocation)
-            .ok()
-            .ok_or(VKManagerError::MemoryFreeFailed)?;
-        Ok(())
+        match SDBuffer::new(
+            Arc::clone(&self.device),
+            name,
+            buffer_create_info,
+            allocator,
+            memory_location
+        ) {
+            Ok(x) => {Ok(x)}
+            Err(_) => {Err(VKManagerError::VKBufferCreationFailed)}
+        }
     }
 
     pub fn create_2d_image(
         &self,
-        allocator: &mut Allocator,
+        allocator: Arc<Mutex<Allocator>>,
         name: &str,
         resolution: vk::Extent2D,
         format: vk::Format,
         usage: vk::ImageUsageFlags,
-    ) -> Result<GPUImage, VKManagerError> {
+    ) -> Result<SDImage, VKManagerError> {
         let image_create_info = vk::ImageCreateInfo {
             flags: Default::default(),
             image_type: vk::ImageType::TYPE_2D,
@@ -504,46 +483,14 @@ impl VKManager {
             initial_layout: vk::ImageLayout::UNDEFINED,
             ..Default::default()
         };
-        unsafe{
-            let image = self.device
-                .create_image(&image_create_info, None)
-                .ok()
-                .ok_or(VKManagerError::VKImageCreationFailed)?;
-            let malloc_requirements = self.device.get_image_memory_requirements(image);
-            let malloc_info = AllocationCreateDesc {
-                name,
-                requirements: malloc_requirements,
-                location: MemoryLocation::GpuOnly,
-                linear: false,
-                allocation_scheme: AllocationScheme::GpuAllocatorManaged,
-            };
-            let mem_allocation = allocator
-                .allocate(&malloc_info)
-                .ok()
-                .ok_or(VKManagerError::MemoryAllocationFailed)?;
-            self.device
-                .bind_image_memory(image, mem_allocation.memory(), mem_allocation.offset())
-                .ok()
-                .ok_or(VKManagerError::ImageMemoryBindFailed)?;
-            Ok(GPUImage {
-                image,
-                allocation: mem_allocation,
-                current_res: resolution,
-            })
-        }
-    }
-
-    pub fn destroy_image(
-        &self,
-        allocator: &mut Allocator,
-        image: GPUImage,
-    ) -> Result<(), VKManagerError> {
-        unsafe { self.device.destroy_image(image.image, None) };
-        allocator
-            .free(image.allocation)
+        SDImage::new(
+            Arc::clone(&self.device),
+            name,
+            image_create_info,
+            allocator,
+        )
             .ok()
-            .ok_or(VKManagerError::MemoryFreeFailed)?;
-        Ok(())
+            .ok_or(VKManagerError::VKImageCreationFailed)
     }
 
     pub fn make_shader_from_spv(
@@ -573,39 +520,6 @@ impl VKManager {
         } else {
             Err(VKManagerError::FileNotFound)
         }
-    }
-
-    pub unsafe fn destroy_per_frame_render_pass_resources(
-        &self,
-        per_frame_render_pass_resources: PerFrameGraphicsPassResources,
-        allocator: &mut Allocator,
-    ) {
-        self.device
-            .destroy_framebuffer(per_frame_render_pass_resources.frame_buffer.clone(), None);
-
-        for image_view in per_frame_render_pass_resources.attachment_image_views {
-            self.device.destroy_image_view(image_view.clone(), None);
-        }
-        for image in per_frame_render_pass_resources.attachments {
-            let _ = self.destroy_image(allocator, image);
-        }
-    }
-
-    pub fn destroy_gpu_render_pass(
-        &self,
-        gpu_render_pass: GraphicsPass,
-        allocator: &mut Allocator,
-    ) {
-        for render_pass_resources in gpu_render_pass.per_frame_resources {
-            unsafe {
-                self.destroy_per_frame_render_pass_resources(render_pass_resources, allocator)
-            };
-        }
-        for pipeline in gpu_render_pass.pipelines {
-            unsafe { self.device.destroy_pipeline_layout(pipeline.0, None) };
-            unsafe { self.device.destroy_pipeline(pipeline.1, None) };
-        }
-        unsafe { self.device.destroy_render_pass(gpu_render_pass.raw, None) };
     }
 }
 
