@@ -125,15 +125,28 @@ impl VKManager {
             );
             needed_instance_extensions.push(DebugUtils::name().as_ptr());
         }
+        #[cfg(target_os = "macos")]
+        needed_instance_extensions.push(vk::KhrPortabilityEnumerationFn::name().as_ptr());
         let c_needed_layers: Vec<*const c_char> =
             needed_layers.iter().map(|x| x.as_ptr()).collect();
 
+        #[cfg(not(target_os = "macos"))]
         let instance_create_info = vk::InstanceCreateInfo {
             p_application_info: &app_info,
             enabled_extension_count: needed_instance_extensions.len() as u32,
             pp_enabled_extension_names: needed_instance_extensions.as_ptr(),
             enabled_layer_count: c_needed_layers.len() as u32,
             pp_enabled_layer_names: c_needed_layers.as_ptr(),
+            ..Default::default()
+        };
+        #[cfg(target_os = "macos")]
+            let instance_create_info = vk::InstanceCreateInfo {
+            p_application_info: &app_info,
+            enabled_extension_count: needed_instance_extensions.len() as u32,
+            pp_enabled_extension_names: needed_instance_extensions.as_ptr(),
+            enabled_layer_count: c_needed_layers.len() as u32,
+            pp_enabled_layer_names: c_needed_layers.as_ptr(),
+            flags: vk::InstanceCreateFlags::ENUMERATE_PORTABILITY_KHR,
             ..Default::default()
         };
 
@@ -269,7 +282,13 @@ impl VKManager {
         gpu: vk::PhysicalDevice,
         queue_indices: [u32; 3],
     ) -> Result<(ash::Device, vk::Queue, vk::Queue, vk::Queue), VKManagerError> {
+        #[cfg(not(target_os = "macos"))]
         let device_extensions = [Swapchain::name().as_ptr()];
+        #[cfg(target_os = "macos")]
+            let device_extensions = [
+            Swapchain::name().as_ptr(),
+            vk::KhrPortabilitySubsetFn::name().as_ptr(),
+        ];
         let device_features = vk::PhysicalDeviceFeatures {
             ..Default::default()
         };

@@ -16,6 +16,7 @@ use vk_wrappers::{GraphicsPassGenerator, VKManager};
 use vk_wrappers::gpu_allocator::vulkan::Allocator;
 use vk_wrappers::gpu_allocator::MemoryLocation;
 use winit::window::Window;
+use crate::renderables::RenderableMaterial;
 
 pub trait Drawable {
     fn draw(&self, renderer: &Renderer);
@@ -46,6 +47,7 @@ pub enum RendererError {
 
 pub struct Renderer {
     pub meshes: Vec<Mesh>,
+    pub materials: HashMap<String, RenderableMaterial>,
     render_fences: Vec<SDFence>,
     acquire_image_semaphores: Vec<SDSemaphore>,
     mesh_sync_semaphores: Vec<SDSemaphore>,
@@ -273,6 +275,7 @@ impl Renderer {
             mesh_sync_semaphores,
             acquire_image_semaphores,
             render_fences,
+            materials: HashMap::new(),
             meshes: Vec::new(),
         })
     }
