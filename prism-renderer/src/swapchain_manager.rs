@@ -31,16 +31,14 @@ impl SwapchainManager {
             vk_manager
                 .surface_driver
                 .get_physical_device_surface_formats(vk_manager.gpu, vk_manager.surface)
-                .ok()
-                .ok_or("Error getting surface formats")?
+                .map_err(|_| "Error getting surface formats")?
         };
         let surface_format = Self::select_surface_format(surface_formats);
         let surface_capabilities = unsafe {
             vk_manager
                 .surface_driver
                 .get_physical_device_surface_capabilities(vk_manager.gpu, vk_manager.surface)
-                .ok()
-                .ok_or("Error getting surface capabilities")?
+                .map_err(|_| "Error getting surface capabilities")?
         };
         let mut desired_image_count = surface_capabilities.min_image_count + 1;
         if surface_capabilities.max_image_count > 0
@@ -67,8 +65,7 @@ impl SwapchainManager {
             vk_manager
                 .surface_driver
                 .get_physical_device_surface_present_modes(vk_manager.gpu, vk_manager.surface)
-                .ok()
-                .ok_or("Error getting present modes")?
+                .map_err(|_| "Error getting present modes")?
         };
         let present_mode = present_modes
             .iter()
@@ -105,16 +102,14 @@ impl SwapchainManager {
             vk_manager
                 .swapchain_driver
                 .create_swapchain(&swapchain_info, None)
-                .ok()
-                .ok_or("Error creating swapchain")?
+                .map_err(|_| "Error creating swapchain")?
         };
 
         let present_images = unsafe {
             vk_manager
                 .swapchain_driver
                 .get_swapchain_images(swapchain)
-                .ok()
-                .ok_or("Error getting swapchain images")?
+                .map_err(|_| "Error getting swapchain images")?
         };
 
         Ok(Self {

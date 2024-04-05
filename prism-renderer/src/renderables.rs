@@ -2,8 +2,6 @@ use vk_wrappers::vk;
 use vk_wrappers::gpu_allocator::vulkan::Allocator;
 use vk_wrappers::gpu_allocator::MemoryLocation;
 use mesh_structs::{Mesh, TriangleFaceInfo, Vertex};
-use std::fs::File;
-use std::io::BufReader;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use vk_wrappers::structs::{SDBuffer, SDImage};
@@ -39,8 +37,7 @@ pub fn make_cube(
                 command_buffer_count: 1,
                 ..Default::default()
             })
-            .ok()
-            .ok_or("Error cmd buffer to upload vertex buffer")?[0]
+            .map_err(|_| "Error cmd buffer to upload vertex buffer")?[0]
     };
     unsafe {
         vk_manager
@@ -52,8 +49,7 @@ pub fn make_cube(
                     ..Default::default()
                 },
             )
-            .ok()
-            .ok_or("Error starting vertex upload command buffer")?;
+            .map_err(|_| "Error starting vertex upload command buffer")?;
     }
 
     let mut vertex_buffers = vec![];
@@ -69,8 +65,7 @@ pub fn make_cube(
                 vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::VERTEX_BUFFER,
                 MemoryLocation::GpuOnly,
             )
-            .ok()
-            .ok_or("Error creating vertex buffer")?;
+            .map_err(|_| "Error creating vertex buffer")?;
         let index_buffer = vk_manager
             .create_buffer(
                 Arc::clone(&allocator),
@@ -79,8 +74,7 @@ pub fn make_cube(
                 vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::INDEX_BUFFER,
                 MemoryLocation::GpuOnly,
             )
-            .ok()
-            .ok_or("Error creating index buffer")?;
+            .map_err(|_| "Error creating index buffer")?;
         let mut vertex_stage_buffer = vk_manager
             .create_buffer(
                 Arc::clone(&allocator),
@@ -89,8 +83,7 @@ pub fn make_cube(
                 vk::BufferUsageFlags::TRANSFER_SRC,
                 MemoryLocation::CpuToGpu,
             )
-            .ok()
-            .ok_or("Error creating vertex staging buffer")?;
+            .map_err(|_| "Error creating vertex staging buffer")?;
         let mut index_stage_buffer = vk_manager
             .create_buffer(
                 Arc::clone(&allocator),
@@ -99,8 +92,7 @@ pub fn make_cube(
                 vk::BufferUsageFlags::TRANSFER_SRC,
                 MemoryLocation::CpuToGpu,
             )
-            .ok()
-            .ok_or("Error creating index staging buffer")?;
+            .map_err(|_| "Error creating index staging buffer")?;
         unsafe {
             vertex_stage_buffer
                 .allocation
@@ -152,14 +144,12 @@ pub fn make_cube(
         vk_manager
             .device
             .end_command_buffer(vert_upload_cmd_buffer)
-            .ok()
-            .ok_or("Error ending vertex upload command buffer")?;
+            .map_err(|_| "Error ending vertex upload command buffer")?;
 
         let vert_sync_fence = vk_manager
             .device
             .create_fence(&vk::FenceCreateInfo::default(), None)
-            .ok()
-            .ok_or("Error creating fence to upload vertex buffers")?;
+            .map_err(|_| "Error creating fence to upload vertex buffers")?;
         vk_manager
             .device
             .queue_submit(
@@ -171,13 +161,11 @@ pub fn make_cube(
                 }],
                 vert_sync_fence,
             )
-            .ok()
-            .ok_or("Error submitting vertex upload commands")?;
+            .map_err(|_| "Error submitting vertex upload commands")?;
         vk_manager
             .device
             .wait_for_fences(&[vert_sync_fence], true, u64::MAX)
-            .ok()
-            .ok_or("Error waiting for vertex upload fence")?;
+            .map_err(|_| "Error waiting for vertex upload fence")?;
         vk_manager.device.destroy_fence(vert_sync_fence, None);
         vk_manager.device.free_command_buffers(command_pool, &[vert_upload_cmd_buffer]);
     }
@@ -226,8 +214,7 @@ impl RenderableMaterial {
                     command_buffer_count: 1,
                     ..Default::default()
                 })
-                .ok()
-                .ok_or("Error cmd buffer to upload texture")?[0]
+                .map_err(|_| "Error cmd buffer to upload texture")?[0]
         };
         unsafe {
             vk_manager
@@ -239,13 +226,12 @@ impl RenderableMaterial {
                         ..Default::default()
                     },
                 )
-                .ok()
-                .ok_or("Error starting texture upload command buffer")?;
+                .map_err(|_| "Error starting texture upload command buffer")?;
         }
         let mut tex_stage_buffers = vec![];
         let mut textures = vec![];
         for (i, image_path) in texture_files.iter().enumerate() {
-            let image_info = image::open(image_path).ok().ok_or("error loading image")?;
+            let image_info = image::open(image_path).map_err(|_| "error loading image")?;
             let image_rgba8 = image_info.to_rgba8();
             let tex_image = vk_manager
                 .create_2d_image(
@@ -263,8 +249,7 @@ impl RenderableMaterial {
                     format,
                     vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED,
                 )
-                .ok()
-                .ok_or("Error creating texture image")?;
+                .map_err(|_| "Error creating texture image")?;
             let mut tex_stage_buffer = vk_manager
                 .create_buffer(
                     Arc::clone(&allocator),
@@ -278,8 +263,7 @@ impl RenderableMaterial {
                     vk::BufferUsageFlags::TRANSFER_SRC,
                     MemoryLocation::CpuToGpu,
                 )
-                .ok()
-                .ok_or("Error creating staging buffer")?;
+                .map_err(|_| "Error creating staging buffer")?;
             tex_stage_buffer
                 .allocation
                 .as_mut()
@@ -370,13 +354,11 @@ impl RenderableMaterial {
             vk_manager
                 .device
                 .end_command_buffer(texture_upload_cmd_buffer)
-                .ok()
-                .ok_or("Error ending texture upload command buffer")?;
+                .map_err(|_| "Error ending texture upload command buffer")?;
             let texture_upload_fence = vk_manager
                 .device
                 .create_fence(&vk::FenceCreateInfo::default(), None)
-                .ok()
-                .ok_or("Error creating fence to upload textures")?;
+                .map_err(|_| "Error creating fence to upload textures")?;
             vk_manager
                 .device
                 .queue_submit(
@@ -388,13 +370,11 @@ impl RenderableMaterial {
                     }],
                     texture_upload_fence,
                 )
-                .ok()
-                .ok_or("Error submitting texture upload commands")?;
+                .map_err(|_| "Error submitting texture upload commands")?;
             vk_manager
                 .device
                 .wait_for_fences(&[texture_upload_fence], true, u64::MAX)
-                .ok()
-                .ok_or("Error waiting for texture upload fence")?;
+                .map_err(|_| "Error waiting for texture upload fence")?;
             vk_manager.device.destroy_fence(texture_upload_fence, None);
             vk_manager.device.free_command_buffers(command_pool, &[texture_upload_cmd_buffer]);
         }

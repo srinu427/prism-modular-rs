@@ -76,17 +76,16 @@ impl GraphicsPassGenerator for VertexPass {
                     },
                     None,
                 )
-                .ok()
-                .ok_or("Error creating triangle render pass")?
+                .map_err(|_| "Error creating triangle render pass")?
         };
 
         let main_c_str = CString::new("main").expect("c str creation error");
         let vert_shader = vk_manager.make_shader_from_spv(
             "prism-renderer/src/vertex_pass/shaders/gbuffer.vert.spv".into(),
-        ).ok().ok_or("Error loading triangle vert shader")?;
+        ).map_err(|_| "Error loading triangle vert shader")?;
         let frag_shader = vk_manager.make_shader_from_spv(
             "prism-renderer/src/vertex_pass/shaders/gbuffer.frag.spv".into(),
-        ).ok().ok_or("Error loading triangle vert shader")?;
+        ).map_err(|_| "Error loading triangle vert shader")?;
         let shader_stages = vec![
             vk::PipelineShaderStageCreateInfo {
                 module: vert_shader,
@@ -171,8 +170,7 @@ impl GraphicsPassGenerator for VertexPass {
             vk_manager
                 .device
                 .create_descriptor_set_layout(&descriptor_layout_info, None)
-                .ok()
-                .ok_or("Error creating descriptor layout for vertex pipeline")?
+                .map_err(|_| "Error creating descriptor layout for vertex pipeline")?
         };
 
         let pipeline_layout_info = vk::PipelineLayoutCreateInfo {
@@ -185,8 +183,7 @@ impl GraphicsPassGenerator for VertexPass {
                 .device
                 .create_pipeline_layout(&pipeline_layout_info, None)
         }
-            .ok()
-            .ok_or(String::from("lol1"))?;
+            .map_err(|_| String::from("lol1"))?;
 
         let pipeline = unsafe {
             vk_manager
@@ -209,8 +206,7 @@ impl GraphicsPassGenerator for VertexPass {
                     }],
                     None,
                 )
-                .ok()
-                .ok_or(String::from("lol"))?
+                .map_err(|_| String::from("lol"))?
         }[0];
         unsafe {
             vk_manager.device.destroy_shader_module(vert_shader, None);
@@ -247,7 +243,7 @@ impl GraphicsPassGenerator for VertexPass {
                 mem::size_of::<Camera3D>() as vk::DeviceSize,
                 vk::BufferUsageFlags::UNIFORM_BUFFER,
                 MemoryLocation::CpuToGpu
-            ).ok().ok_or("Error creating uniform buffer for cam data")?;
+            ).map_err(|_| "Error creating uniform buffer for cam data")?;
             let img_name = format!("vertex_attachment_{}", i);
             let attachment = vk_manager.create_2d_image(
                 Arc::clone(&allocator),
@@ -255,7 +251,7 @@ impl GraphicsPassGenerator for VertexPass {
                 resolution,
                 vk::Format::R8G8B8A8_UNORM,
                 vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_SRC
-            ).ok().ok_or("Error creating triangle attachment image")?;
+            ).map_err(|_| "Error creating triangle attachment image")?;
             let attachment_view_info = vk::ImageViewCreateInfo {
                 image: attachment.image,
                 view_type: vk::ImageViewType::TYPE_2D,
@@ -279,8 +275,7 @@ impl GraphicsPassGenerator for VertexPass {
                 Arc::clone(&vk_manager.device),
                 attachment_view_info,
             )
-                .ok()
-                .ok_or("Error creating image view for triangle render image")?;
+                .map_err(|_| "Error creating image view for triangle render image")?;
             let frame_buffer_info = vk::FramebufferCreateInfo {
                 render_pass: graphics_pass.render_pass,
                 attachment_count: 1,
@@ -294,14 +289,12 @@ impl GraphicsPassGenerator for VertexPass {
                 Arc::clone(&vk_manager.device),
                 frame_buffer_info
             )
-                .ok()
-                .ok_or("Error creating frame buffer for triangle render pipeline")?;
+                .map_err(|_| "Error creating frame buffer for triangle render pipeline")?;
 
             let descriptor_sets = descriptor_pool.make_sd_descriptor_sets(
                 vec![graphics_pass.pipeline_packs[0].descriptor_set_layout],
             )
-                .ok()
-                .ok_or("Error creating descriptor sets")?;
+                .map_err(|_| "Error creating descriptor sets")?;
 
             triangle_per_frame_resources.push(PerFrameGraphicsPassResources {
                 attachments: vec![attachment],

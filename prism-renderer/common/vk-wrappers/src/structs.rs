@@ -21,8 +21,7 @@ impl SDCommandPool {
         let cmd_pool = unsafe {
             device
                 .create_command_pool(&cmd_pool_create_info, None)
-                .ok()
-                .ok_or(RendererError::CommandPool(CommandPoolError::CreateError))?
+                .map_err(|_| RendererError::CommandPool(CommandPoolError::CreateError))?
         };
         Ok(Self {
             device,
@@ -45,8 +44,7 @@ impl SDCommandPool {
             Ok(self
                 .device
                 .allocate_command_buffers(&command_buffer_allocate_info)
-                .ok()
-                .ok_or(RendererError::CommandPool(
+                .map_err(|_| RendererError::CommandPool(
                     CommandPoolError::BuffersAllocationError,
                 ))?
                 .drain(..)
@@ -77,8 +75,7 @@ impl SDSemaphore {
         let semaphore = unsafe {
             device
                 .create_semaphore(&semaphore_create_info, None)
-                .ok()
-                .ok_or(RendererError::Semaphore(SemaphoreError::CreateError))?
+                .map_err(|_| RendererError::Semaphore(SemaphoreError::CreateError))?
         };
         Ok(Self {
             device,
@@ -108,8 +105,7 @@ impl SDFence {
         let fence = unsafe {
             device
                 .create_fence(&fence_create_info, None)
-                .ok()
-                .ok_or(RendererError::Fence(FenceError::CreateError))?
+                .map_err(|_| RendererError::Fence(FenceError::CreateError))?
         };
         Ok(Self {
             device,
@@ -121,8 +117,7 @@ impl SDFence {
         unsafe {
             self.device
                 .wait_for_fences(&[self.value], true, timeout)
-                .ok()
-                .ok_or(RendererError::Fence(FenceError::WaitError))?
+                .map_err(|_| RendererError::Fence(FenceError::WaitError))?
         }
         Ok(())
     }
@@ -131,8 +126,7 @@ impl SDFence {
         unsafe {
             self.device
                 .reset_fences(&[self.value])
-                .ok()
-                .ok_or(RendererError::Fence(FenceError::ResetError))?
+                .map_err(|_| RendererError::Fence(FenceError::ResetError))?
         }
         Ok(())
     }
@@ -165,8 +159,7 @@ impl SDImage {
         let image = unsafe {
             device
                 .create_image(&image_create_info, None)
-                .ok()
-                .ok_or(RendererError::Image(ImageError::CreateError))?
+                .map_err(|_| RendererError::Image(ImageError::CreateError))?
         };
         let malloc_requirements = unsafe { device.get_image_memory_requirements(image) };
         let malloc_info = AllocationCreateDesc {
@@ -178,16 +171,13 @@ impl SDImage {
         };
         let allocation = allocator
             .lock()
-            .ok()
-            .ok_or(RendererError::Allocation(AllocationError::LockError))?
+            .map_err(|_| RendererError::Allocation(AllocationError::LockError))?
             .allocate(&malloc_info)
-            .ok()
-            .ok_or(RendererError::Allocation(AllocationError::AllocationFailed))?;
+            .map_err(|_| RendererError::Allocation(AllocationError::AllocationFailed))?;
         unsafe {
             device
                 .bind_image_memory(image, allocation.memory(), allocation.offset())
-                .ok()
-                .ok_or(RendererError::Image(ImageError::BindError))?;
+                .map_err(|_| RendererError::Image(ImageError::BindError))?;
         }
         Ok(Self {
             device,
@@ -210,7 +200,7 @@ impl Drop for SDImage {
 
         if let Some(allocator) = allocator {
             if let Some(allocation) = allocation {
-                if let Some(mut allocator) = allocator.lock().ok() {
+                if let Ok(mut allocator) = allocator.lock() {
                     let _ = allocator.free(allocation);
                 }
             };
@@ -231,8 +221,7 @@ impl SDImageView {
         let image_view = unsafe {
             device
                 .create_image_view(&image_view_create_info, None)
-                .ok()
-                .ok_or(RendererError::ImageView(ImageViewError::CreateError))?
+                .map_err(|_| RendererError::ImageView(ImageViewError::CreateError))?
         };
 
         Ok(Self {
@@ -263,8 +252,7 @@ impl SDFrameBuffer {
         let frame_buffer = unsafe {
             device
                 .create_framebuffer(&frame_buffer_create_info, None)
-                .ok()
-                .ok_or(RendererError::FrameBuffer(FrameBufferError::CreateError))?
+                .map_err(|_| RendererError::FrameBuffer(FrameBufferError::CreateError))?
         };
 
         Ok(Self {
@@ -301,8 +289,7 @@ impl SDBuffer {
         let buffer = unsafe {
             device
                 .create_buffer(&buffer_create_info, None)
-                .ok()
-                .ok_or(RendererError::Buffer(BufferError::CreateError))?
+                .map_err(|_| RendererError::Buffer(BufferError::CreateError))?
         };
 
         let malloc_requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
@@ -315,16 +302,13 @@ impl SDBuffer {
         };
         let allocation = allocator
             .lock()
-            .ok()
-            .ok_or(RendererError::Allocation(AllocationError::LockError))?
+            .map_err(|_| RendererError::Allocation(AllocationError::LockError))?
             .allocate(&malloc_info)
-            .ok()
-            .ok_or(RendererError::Allocation(AllocationError::AllocationFailed))?;
+            .map_err(|_| RendererError::Allocation(AllocationError::AllocationFailed))?;
         unsafe {
             device
                 .bind_buffer_memory(buffer, allocation.memory(), allocation.offset())
-                .ok()
-                .ok_or(RendererError::Buffer(BufferError::CreateError))?;
+                .map_err(|_| RendererError::Buffer(BufferError::CreateError))?;
         }
 
         Ok(Self {
@@ -347,7 +331,7 @@ impl Drop for SDBuffer {
 
         if let Some(allocator) = allocator {
             if let Some(allocation) = allocation {
-                if let Some(mut allocator) = allocator.lock().ok() {
+                if let Ok(mut allocator) = allocator.lock() {
                     let _ = allocator.free(allocation);
                 }
             };
@@ -479,8 +463,7 @@ impl SDDescriptorPool {
         let descriptor_pool = unsafe {
             device
                 .create_descriptor_pool(&descriptor_pool_create_info, None)
-                .ok()
-                .ok_or(RendererError::DescriptorPool(
+                .map_err(|_| RendererError::DescriptorPool(
                     DescriptorPoolError::CreateError,
                 ))?
         };
@@ -504,8 +487,7 @@ impl SDDescriptorPool {
             Ok(self
                 .device
                 .allocate_descriptor_sets(&descriptor_set_allocate_info)
-                .ok()
-                .ok_or(RendererError::DescriptorPool(
+                .map_err(|_| RendererError::DescriptorPool(
                     DescriptorPoolError::SetsAllocationError,
                 ))?
                 .drain(..)

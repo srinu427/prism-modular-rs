@@ -116,21 +116,13 @@ impl PrismApp {
                         ..
                     } => {
                         self.renderer.set_camera(self.camera);
-                        match self.renderer.draw() {
-                            Ok(_) => {}
-                            Err(e) => {
-                                println!("renderer draw error: {}", e);
-                            }
-                        };
+                        self.renderer.draw()
+                            .map_err(|e| println!("renderer draw error: {}", e))?
                     }
                     Event::AboutToWait => {
                         self.renderer.set_camera(self.camera);
-                        match self.renderer.draw() {
-                            Ok(_) => {}
-                            Err(e) => {
-                                println!("renderer draw error: {}", e);
-                            }
-                        };
+                        self.renderer.draw()
+                            .map_err(|e| println!("renderer draw error: {}", e))?
                     }
                     _ => (),
                 }
