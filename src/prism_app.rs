@@ -112,7 +112,8 @@ impl PrismApp {
                         elw.exit()
                     }
                     Event::WindowEvent {
-                        event: WindowEvent::RedrawRequested,
+                        event: WindowEvent::RedrawRequested |
+                        WindowEvent::Moved(_),
                         ..
                     } => {
                         self.renderer.set_camera(self.camera);
