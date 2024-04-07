@@ -10,8 +10,8 @@ use vk_wrappers::VKManager;
 pub struct RenderableMesh {
     name: String,
     mesh: Mesh,
-    vertex_buffers: Vec<SDBuffer>,
-    index_buffers: Vec<SDBuffer>,
+    pub vertex_buffers: Vec<SDBuffer>,
+    pub index_buffers: Vec<SDBuffer>,
 }
 
 pub fn make_cube(
@@ -192,8 +192,8 @@ pub fn make_cube(
 pub struct RenderableMaterial {
     textures: Vec<SDImage>,
     texture_views: Vec<vk::ImageView>,
-    descriptor_sets: Vec<vk::DescriptorSet>,
-    meshes: Vec<RenderableMesh>,
+    pub descriptor_sets: Vec<vk::DescriptorSet>,
+    pub meshes: Vec<RenderableMesh>,
 }
 
 impl RenderableMaterial {
@@ -418,5 +418,9 @@ impl RenderableMaterial {
             descriptor_sets: vec![],
             meshes: vec![],
         })
+    }
+
+    pub fn add_mesh(&mut self, mesh: RenderableMesh){
+        self.meshes.push(mesh);
     }
 }

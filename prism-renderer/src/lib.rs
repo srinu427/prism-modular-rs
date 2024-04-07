@@ -49,8 +49,6 @@ pub struct Renderer {
     pub materials: HashMap<String, RenderableMaterial>,
     render_fences: Vec<SDFence>,
     acquire_image_semaphores: Vec<SDSemaphore>,
-    mesh_sync_semaphores: Vec<SDSemaphore>,
-    mesh_sync_command_buffers: Vec<SDCommandBuffer>,
     render_semaphores: Vec<SDSemaphore>,
     render_command_buffers: Vec<SDCommandBuffer>,
     render_command_pool: SDCommandPool,
@@ -59,8 +57,6 @@ pub struct Renderer {
     vertex_descriptor_pool: SDDescriptorPool,
     images: HashMap<String, SDImage>,
     image_views: HashMap<String, SDImageView>,
-    vertex_buffers: Vec<SDBuffer>,
-    vertex_stage_buffers: Vec<SDBuffer>,
     buffers: HashMap<String, SDBuffer>,
     transfer_allocator: Arc<Mutex<Allocator>>,
     vertex_allocator: Arc<Mutex<Allocator>>,
@@ -98,10 +94,6 @@ impl Renderer {
         let mut vertex_graphics_pass =
             VertexPass::make_gpu_render_pass(&vk_manager, vk::Format::R8G8B8A8_UNORM)
                 .map_err(|_| RendererError::GraphicsPassCreateError)?;
-
-        let mesh_sync_command_buffers = transfer_command_pool
-            .make_sd_command_buffers(vk::CommandBufferLevel::PRIMARY, 3)
-            .map_err(|_| RendererError::CommandBuffersCreateError)?;
 
         let render_command_buffers = render_command_pool
             .make_sd_command_buffers(vk::CommandBufferLevel::PRIMARY, 3)
@@ -244,15 +236,11 @@ impl Renderer {
             images: HashMap::new(),
             image_views: HashMap::new(),
             buffers: HashMap::new(),
-            vertex_buffers,
-            vertex_stage_buffers: Vec::new(),
             transfer_command_pool,
             render_command_pool,
             render_command_buffers,
             render_semaphores,
-            mesh_sync_command_buffers,
             vertex_descriptor_pool,
-            mesh_sync_semaphores,
             acquire_image_semaphores,
             render_fences,
             materials: HashMap::new(),
@@ -280,93 +268,6 @@ impl Renderer {
                 (next_image_idx, e)
             }
         };
-
-        let vert_buffer = &self.vertex_buffers[next_image_idx];
-        let mesh_sync_cmd_buffer = self.mesh_sync_command_buffers[next_image_idx].value;
-        self.render_fences[self.swapchain_manager.current_image_idx].wait(u64::MAX)
-            .map_err(|_| "Error waiting for fence")?;
-        self.render_fences[self.swapchain_manager.current_image_idx].reset()
-            .map_err(|_| "Error resetting fence")?;
-
-        unsafe {
-            self.vk_manager
-                .device
-                .reset_command_buffer(
-                    mesh_sync_cmd_buffer,
-                    vk::CommandBufferResetFlags::default()
-                )
-                .map_err(|_| "Error resetting mesh sync command buffer")?;
-            self.vk_manager
-                .device
-                .begin_command_buffer(
-                    mesh_sync_cmd_buffer,
-                    &vk::CommandBufferBeginInfo {
-                        flags: vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT,
-                        ..Default::default()
-                    },
-                )
-                .map_err(|_| "Error starting vertex sync command buffer")?;
-        }
-        self.vertex_stage_buffers.clear();
-        let mut stage_vertex_buffers = Vec::with_capacity(self.meshes.len());
-        let mut write_offset = 0;
-        for (i, mesh) in self.meshes.iter().enumerate() {
-            let write_size = mesh.vertices.len() * std::mem::size_of::<Vertex>();
-            let mut staging_buffer = self
-                .vk_manager
-                .create_buffer(
-                    Arc::clone(&self.transfer_allocator),
-                    &format!("staging_buffer_{}", i),
-                    4096,
-                    vk::BufferUsageFlags::TRANSFER_SRC,
-                    MemoryLocation::CpuToGpu,
-                )
-                .map_err(|_| "Error creating staging buffer")?;
-            unsafe {
-                staging_buffer
-                    .allocation
-                    .as_mut()
-                    .ok_or("Error getting memory of buffer")?
-                    .mapped_slice_mut()
-                    .ok_or("Error writing to staging buffer")?
-                    .as_mut_ptr()
-                    .copy_from(mesh.vertices.as_ptr() as *const u8, write_size);
-                self.vk_manager.device.cmd_copy_buffer(
-                    mesh_sync_cmd_buffer,
-                    staging_buffer.buffer,
-                    self.vertex_buffers[next_image_idx].buffer,
-                    &[vk::BufferCopy {
-                        src_offset: 0,
-                        dst_offset: write_offset,
-                        size: write_size as u64,
-                    }],
-                );
-            }
-            stage_vertex_buffers.push(staging_buffer);
-            write_offset += write_size as u64;
-        }
-        unsafe {
-            self.vk_manager
-                .device
-                .end_command_buffer(mesh_sync_cmd_buffer)
-                .map_err(|_| "Error ending vertex sync command buffer")?;
-
-            self.vk_manager
-                .device
-                .queue_submit(
-                    self.vk_manager.t_queue,
-                    &[vk::SubmitInfo {
-                        command_buffer_count: 1,
-                        p_command_buffers: &mesh_sync_cmd_buffer,
-                        signal_semaphore_count: 1,
-                        p_signal_semaphores: &self.mesh_sync_semaphores[next_image_idx]
-                            .value,
-                        ..Default::default()
-                    }],
-                    vk::Fence::null(),
-                )
-                .map_err(|_| "Error submitting vertex sync commands")?;
-        }
 
         let camera_transforms = CameraTransforms{
             view: self.camera.get_view_matrix(),
@@ -504,32 +405,30 @@ impl Renderer {
                 }],
             );
 
-            self.vk_manager.device.cmd_bind_vertex_buffers(
-                vertex_command_buffer,
-                0,
-                &[vert_buffer.buffer],
-                &[0],
-            );
-
-            self.vk_manager.device.cmd_bind_descriptor_sets(
-                vertex_command_buffer,
-                vk::PipelineBindPoint::GRAPHICS,
-                vertex_render_pass.pipeline_packs[0].pipeline_layout,
-                0,
-                &[vertex_render_pass.per_frame_resources[next_image_idx].descriptor_sets[0].value],
-                &[],
-            );
-
-            let mut vert_offset = 0;
-            for mesh in self.meshes.iter() {
-                self.vk_manager.device.cmd_draw(
+            for (_, material) in self.materials.iter() {
+                self.vk_manager.device.cmd_bind_descriptor_sets(
                     vertex_command_buffer,
-                    mesh.vertices.len() as u32,
-                    1,
-                    vert_offset,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    vertex_render_pass.pipeline_packs[0].pipeline_layout,
                     0,
+                    &[vertex_render_pass.per_frame_resources[next_image_idx].descriptor_sets[0].value],
+                    &[],
                 );
-                vert_offset += mesh.vertices.len() as u32;
+                for mesh in material.meshes.iter(){
+                    self.vk_manager.device.cmd_bind_vertex_buffers(
+                        vertex_command_buffer,
+                        0,
+                        &[mesh.vertex_buffers[next_image_idx].buffer],
+                        &[0],
+                    );
+                    self.vk_manager.device.cmd_draw(
+                        vertex_command_buffer,
+                        mesh.vertex_buffers[next_image_idx].current_size as u32,
+                        1,
+                        0,
+                        0,
+                    );
+                }
             }
 
             self.vk_manager
@@ -551,7 +450,6 @@ impl Renderer {
 
         let wait_semaphores = vec![
             self.acquire_image_semaphores[self.swapchain_manager.current_image_idx].value,
-            self.mesh_sync_semaphores[next_image_idx].value,
         ];
         let wait_stages = vec![
             vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
@@ -584,7 +482,6 @@ impl Renderer {
             next_image_idx,
             vec![self.render_semaphores[next_image_idx].value],
         );
-        self.vertex_stage_buffers = stage_vertex_buffers;
         Ok(())
     }
 
