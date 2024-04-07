@@ -46,7 +46,6 @@ pub enum RendererError {
 }
 
 pub struct Renderer {
-    pub meshes: Vec<Mesh>,
     pub materials: HashMap<String, RenderableMaterial>,
     render_fences: Vec<SDFence>,
     acquire_image_semaphores: Vec<SDSemaphore>,
@@ -257,7 +256,6 @@ impl Renderer {
             acquire_image_semaphores,
             render_fences,
             materials: HashMap::new(),
-            meshes: Vec::new(),
         })
     }
 

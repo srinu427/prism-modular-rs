@@ -81,10 +81,10 @@ impl GraphicsPassGenerator for VertexPass {
 
         let main_c_str = CString::new("main").expect("c str creation error");
         let vert_shader = vk_manager.make_shader_from_spv(
-            "prism-renderer/src/vertex_pass/shaders/gbuffer.vert.spv".into(),
+            "prism-renderer/src/vertex_pass/shaders/g_buffer.vert.spv".into(),
         ).map_err(|_| "Error loading triangle vert shader")?;
         let frag_shader = vk_manager.make_shader_from_spv(
-            "prism-renderer/src/vertex_pass/shaders/gbuffer.frag.spv".into(),
+            "prism-renderer/src/vertex_pass/shaders/g_buffer.frag.spv".into(),
         ).map_err(|_| "Error loading triangle vert shader")?;
         let shader_stages = vec![
             vk::PipelineShaderStageCreateInfo {

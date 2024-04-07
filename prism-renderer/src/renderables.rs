@@ -230,6 +230,7 @@ impl RenderableMaterial {
         }
         let mut tex_stage_buffers = vec![];
         let mut textures = vec![];
+        let mut texture_views = vec![];
         for (i, image_path) in texture_files.iter().enumerate() {
             let image_info = image::open(image_path).map_err(|_| "error loading image")?;
             let image_rgba8 = image_info.to_rgba8();
@@ -250,6 +251,31 @@ impl RenderableMaterial {
                     vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED,
                 )
                 .map_err(|_| "Error creating texture image")?;
+            let tex_image_view = unsafe{
+                vk_manager.device.create_image_view(
+                    &vk::ImageViewCreateInfo{
+                        image: tex_image.image,
+                        view_type: vk::ImageViewType::TYPE_2D,
+                        format,
+                        components: vk::ComponentMapping::builder()
+                            .r(vk::ComponentSwizzle::IDENTITY)
+                            .g(vk::ComponentSwizzle::IDENTITY)
+                            .b(vk::ComponentSwizzle::IDENTITY)
+                            .a(vk::ComponentSwizzle::IDENTITY)
+                            .build(),
+                        subresource_range: vk::ImageSubresourceRange {
+                            aspect_mask: vk::ImageAspectFlags::COLOR,
+                            base_mip_level: 0,
+                            level_count: 1,
+                            base_array_layer: 0,
+                            layer_count: 1,
+                        },
+                        ..Default::default()
+                    },
+                    None
+                )
+                    .map_err(|_| "Error creating texture view")?
+            };
             let mut tex_stage_buffer = vk_manager
                 .create_buffer(
                     Arc::clone(&allocator),
@@ -348,6 +374,7 @@ impl RenderableMaterial {
             }
             tex_stage_buffers.push(tex_stage_buffer);
             textures.push(tex_image);
+            texture_views.push(tex_image_view);
         }
 
         unsafe {
@@ -387,7 +414,7 @@ impl RenderableMaterial {
 
         Ok(RenderableMaterial {
             textures,
-            texture_views: vec![],
+            texture_views,
             descriptor_sets: vec![],
             meshes: vec![],
         })
