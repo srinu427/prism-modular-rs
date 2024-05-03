@@ -1,11 +1,12 @@
 #version 450
 
-layout(location = 0) in vec4 frag_color;
+layout(location = 0) in vec2 tex_coords;
 
 layout(location = 0) out vec4 out_color;
 
-layout(set = 0, binding = 0) uniform sampler2D albedo;
+layout(set = 1, binding = 0) uniform sampler2D albedo;
 
 void main() {
-    out_color = frag_color;
+    vec3 albedo_color = texture(albedo, tex_coords).xyz;
+    out_color = vec4(albedo_color, 1.0f);
 }
