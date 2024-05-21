@@ -6,9 +6,6 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-winit = { version = "0.30.0", features = ["rwh_05"] }
 image = "0.25.1"
-vk-wrappers = {path = "common/vk-wrappers"}
-mesh-structs = {path = "common/mesh-structs"}
-camera-3d = {path = "common/camera-3d"}
-pbr-render-pass = {path = "pbr-render-pass"}
+thiserror = "1.0.61"
+vk-context = {path = "common/vk-context"}

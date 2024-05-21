@@ -5,16 +5,13 @@ use std::mem;
 use std::sync::{Arc, Mutex};
 use vk_wrappers::structs::*;
 use vk_wrappers::vk;
-use vk_wrappers::{GraphicsPassGenerator, VKManager};
 use vk_wrappers::vk_mem::Allocator;
+use vk_wrappers::{GraphicsPassGenerator, VKManager};
 
 pub struct VertexPass {}
 
 impl GraphicsPassGenerator for VertexPass {
-  fn make_gpu_render_pass(
-    vk_manager: &VKManager,
-    image_format: vk::Format,
-  ) -> Result<SDRenderPass, String> {
+  fn make_gpu_render_pass(vk_manager: &VKManager, image_format: vk::Format) -> Result<SDRenderPass, String> {
     let attachment_desc = vk::AttachmentDescription {
       format: image_format,
       samples: vk::SampleCountFlags::TYPE_1,
@@ -27,10 +24,8 @@ impl GraphicsPassGenerator for VertexPass {
       ..Default::default()
     };
 
-    let attachment_ref = vk::AttachmentReference {
-      attachment: 0,
-      layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-    };
+    let attachment_ref =
+      vk::AttachmentReference { attachment: 0, layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL };
 
     let subpass_desc = vk::SubpassDescription {
       pipeline_bind_point: vk::PipelineBindPoint::GRAPHICS,
@@ -120,11 +115,8 @@ impl GraphicsPassGenerator for VertexPass {
       ..Default::default()
     };
 
-    let viewport_state = vk::PipelineViewportStateCreateInfo {
-      viewport_count: 1,
-      scissor_count: 1,
-      ..Default::default()
-    };
+    let viewport_state =
+      vk::PipelineViewportStateCreateInfo { viewport_count: 1, scissor_count: 1, ..Default::default() };
     let rasterizer_info = vk::PipelineRasterizationStateCreateInfo {
       depth_clamp_enable: vk::FALSE,
       polygon_mode: vk::PolygonMode::FILL,
@@ -151,15 +143,13 @@ impl GraphicsPassGenerator for VertexPass {
       ..Default::default()
     };
 
-    let cam_descriptor_layout_bindings = vec![
-      vk::DescriptorSetLayoutBinding {
-        binding: 0,
-        descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
-        descriptor_count: 1,
-        stage_flags: vk::ShaderStageFlags::VERTEX,
-        ..Default::default()
-      },
-    ];
+    let cam_descriptor_layout_bindings = vec![vk::DescriptorSetLayoutBinding {
+      binding: 0,
+      descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
+      descriptor_count: 1,
+      stage_flags: vk::ShaderStageFlags::VERTEX,
+      ..Default::default()
+    }];
     let cam_descriptor_layout_info = vk::DescriptorSetLayoutCreateInfo {
       binding_count: cam_descriptor_layout_bindings.len() as u32,
       p_bindings: cam_descriptor_layout_bindings.as_ptr(),
@@ -172,15 +162,13 @@ impl GraphicsPassGenerator for VertexPass {
         .map_err(|_| "Error creating descriptor layout for vertex pipeline")?
     };
 
-    let tex_descriptor_layout_bindings = vec![
-      vk::DescriptorSetLayoutBinding {
-        binding: 0,
-        descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
-        descriptor_count: 1,
-        stage_flags: vk::ShaderStageFlags::VERTEX,
-        ..Default::default()
-      },
-    ];
+    let tex_descriptor_layout_bindings = vec![vk::DescriptorSetLayoutBinding {
+      binding: 0,
+      descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
+      descriptor_count: 1,
+      stage_flags: vk::ShaderStageFlags::VERTEX,
+      ..Default::default()
+    }];
     let tex_descriptor_layout_info = vk::DescriptorSetLayoutCreateInfo {
       binding_count: tex_descriptor_layout_bindings.len() as u32,
       p_bindings: tex_descriptor_layout_bindings.as_ptr(),
@@ -200,12 +188,8 @@ impl GraphicsPassGenerator for VertexPass {
       p_set_layouts: set_layouts.as_ptr(),
       ..Default::default()
     };
-    let pipeline_layout = unsafe {
-      vk_manager
-        .device
-        .create_pipeline_layout(&pipeline_layout_info, None)
-    }
-    .map_err(|_| String::from("lol1"))?;
+    let pipeline_layout = unsafe { vk_manager.device.create_pipeline_layout(&pipeline_layout_info, None) }
+      .map_err(|_| String::from("lol1"))?;
 
     let pipeline = unsafe {
       vk_manager
@@ -238,11 +222,7 @@ impl GraphicsPassGenerator for VertexPass {
     Ok(SDRenderPass::new(
       Arc::clone(&vk_manager.device),
       render_pass,
-      vec![PipelinePack {
-        pipeline,
-        pipeline_layout,
-        descriptor_set_layouts: set_layouts.to_vec(),
-      }],
+      vec![PipelinePack { pipeline, pipeline_layout, descriptor_set_layouts: set_layouts.to_vec() }],
       vec![],
     ))
   }

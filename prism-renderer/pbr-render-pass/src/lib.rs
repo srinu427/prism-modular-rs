@@ -1,4 +1,5 @@
 mod layouts;
+mod texture;
 
 use mesh_structs::{Mesh, TriangleFaceInfo, Vertex};
 use std::path::PathBuf;
