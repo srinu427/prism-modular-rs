@@ -1,7 +1,7 @@
 mod prism_app_activity;
 
-use winit::event_loop::{ControlFlow, EventLoop};
 use prism_app_activity::PrismAppActivity;
+use winit::event_loop::{ControlFlow, EventLoop};
 
 fn main() {
   let mut prism_app = PrismAppActivity::new();

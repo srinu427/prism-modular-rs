@@ -26,10 +26,13 @@ impl VkLoaders {
     let layers = vec![
       #[cfg(debug_assertions)]
       c"VK_LAYER_KHRONOS_validation".as_ptr(),
+
     ];
     let instance_extensions = vec![
       #[cfg(debug_assertions)]
       ext::debug_utils::NAME.as_ptr(),
+      #[cfg(target_os = "macos")]
+      khr::portability_enumeration::NAME.as_ptr()
     ];
     unsafe {
       let loader = ash::Entry::load().map_err(|e| format!("vulkan load failed: {e}"))?;
@@ -43,7 +46,16 @@ impl VkLoaders {
         .map_err(|e| format!("debug messenger init failed: {e}"))?;
 
       let surface_driver = khr::surface::Instance::new(&loader, &vk_driver);
-      Ok(Self { surface_driver, dbg_messenger, dbg_utils_driver, vk_driver, _loader: loader })
+
+      Ok(Self {
+        surface_driver,
+        #[cfg(debug_assertions)]
+        dbg_messenger,
+        #[cfg(debug_assertions)]
+        dbg_utils_driver,
+        vk_driver,
+        _loader: loader
+      })
     }
   }
 

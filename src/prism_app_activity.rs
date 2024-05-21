@@ -1,7 +1,7 @@
 mod window_manager;
 
-use std::sync::Arc;
 use prism_renderer::VkLoaders;
+use std::sync::Arc;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
@@ -15,19 +15,16 @@ pub struct PrismAppActivity {
 impl PrismAppActivity {
   pub fn new() -> Result<Self, String> {
     let vk_loaders = Arc::new(VkLoaders::new()?);
-    Ok(Self {
-      vk_loaders,
-      window_manager: None
-    })
+    Ok(Self { vk_loaders, window_manager: None })
   }
 }
 
 impl ApplicationHandler for PrismAppActivity {
   fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-    match event_loop.create_window(WindowAttributes::default()){
+    match event_loop.create_window(WindowAttributes::default()) {
       Ok(w) => {
-        if self.window_manager.is_none(){
-          match window_manager::WindowManager::new(Arc::clone(&self.vk_loaders), w){
+        if self.window_manager.is_none() {
+          match window_manager::WindowManager::new(Arc::clone(&self.vk_loaders), w) {
             Ok(wm) => {
               self.window_manager = Some(wm);
             }
@@ -36,6 +33,8 @@ impl ApplicationHandler for PrismAppActivity {
               event_loop.exit()
             }
           }
+        } else { 
+          
         }
       }
       Err(e) => {
@@ -45,7 +44,12 @@ impl ApplicationHandler for PrismAppActivity {
     }
   }
 
-  fn window_event(&mut self, event_loop: &ActiveEventLoop, window_id: WindowId, event: WindowEvent) {
+  fn window_event(
+    &mut self,
+    event_loop: &ActiveEventLoop,
+    window_id: WindowId,
+    event: WindowEvent,
+  ) {
     match event {
       WindowEvent::ActivationTokenDone { .. } => {}
       WindowEvent::Resized(_) => {}

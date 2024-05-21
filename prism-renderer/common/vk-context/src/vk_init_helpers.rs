@@ -6,13 +6,8 @@ use std::ffi::c_char;
 pub unsafe fn make_instance(
   driver: &ash::Entry,
   needed_layers: Vec<*const c_char>,
-  mut needed_extensions: Vec<*const c_char>,
+  needed_extensions: Vec<*const c_char>,
 ) -> Result<ash::Instance, String> {
-  #[cfg(target_os = "macos")]
-  if !needed_extensions.contains(&khr::portability_enumeration::NAME.as_ptr()) {
-    needed_extensions.push(khr::portability_enumeration::NAME.as_ptr());
-  }
-
   let app_info = vk::ApplicationInfo::default()
     .application_name(c"Prism VK App")
     .application_version(0)

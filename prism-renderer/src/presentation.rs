@@ -4,7 +4,14 @@ use vk_context::{khr, vk, VkContext};
 
 #[derive(thiserror::Error, Debug)]
 pub enum PresentManagerError {
-
+  #[error("Error initializing PresentManager: {0}")]
+  InitError(String),
+  #[error("Error refreshing PresentManager: {0}")]
+  RefreshError(String),
+  #[error("Surface not in sync with swapchain call refresh_swapchain to sync it")]
+  RefreshNeeded,
+  #[error("Error in Blit-ting and Presenting the image: {0}")]
+  PresentError(String),
 }
 
 pub struct PresentManager {
@@ -32,27 +39,33 @@ impl PresentManager {
     formats[0]
   }
 
-  fn refresh_swapchain(&mut self, new_size: vk::Extent2D) -> Result<(), String> {
+  fn refresh_swapchain(&mut self, new_size: vk::Extent2D) -> Result<(), PresentManagerError> {
     let (surface_format, surface_caps, present_mode) = unsafe {
       let surface_formats = self
         .vk_context
         .vk_loaders
         .surface_driver
         .get_physical_device_surface_formats(self.vk_context.gpu, self.surface)
-        .map_err(|e| format!("can't get surface formats: {e}"))?;
+        .map_err(|e| {
+          PresentManagerError::RefreshError(format!("can't get surface formats: {e}"))
+        })?;
       let surface_format = Self::select_surface_format(surface_formats);
       let surface_caps = self
         .vk_context
         .vk_loaders
         .surface_driver
         .get_physical_device_surface_capabilities(self.vk_context.gpu, self.surface)
-        .map_err(|_| "Error getting surface capabilities")?;
+        .map_err(|e| {
+          PresentManagerError::RefreshError(format!("error getting surface capabilities: {e}"))
+        })?;
       let present_modes = self
         .vk_context
         .vk_loaders
         .surface_driver
         .get_physical_device_surface_present_modes(self.vk_context.gpu, self.surface)
-        .map_err(|_| "Error getting present modes")?;
+        .map_err(|e| {
+          PresentManagerError::RefreshError(format!("Error getting present modes :{e}"))
+        })?;
       let present_mode = present_modes
         .iter()
         .find(|mode| **mode == vk::PresentModeKHR::MAILBOX)
@@ -96,11 +109,13 @@ impl PresentManager {
       let new_swapchain = self
         .swapchain_device
         .create_swapchain(&swapchain_info, None)
-        .map_err(|e| format!("error creating swapchain: {e}"))?;
+        .map_err(|e| PresentManagerError::RefreshError(format!("error creating swapchain: {e}")))?;
       let new_images = self
         .swapchain_device
         .get_swapchain_images(new_swapchain)
-        .map_err(|e| format!("error getting swapchain images: {e}"))?
+        .map_err(|e| {
+          PresentManagerError::RefreshError(format!("error getting swapchain images: {e}"))
+        })?
         .into_iter()
         .map(|x| PWImage {
           inner: x,
@@ -120,7 +135,9 @@ impl PresentManager {
             .command_buffer_count(new_images.len() as u32)
             .level(vk::CommandBufferLevel::PRIMARY),
         )
-        .map_err(|e| format!("can't allocate command buffers: {e}"))?;
+        .map_err(|e| {
+          PresentManagerError::RefreshError(format!("can't allocate command buffers: {e}"))
+        })?;
       self.cmd_buffers = new_cmd_buffers;
 
       for sem in self.acquire_image_semaphores.drain(..) {
@@ -132,7 +149,7 @@ impl PresentManager {
           .vk_context
           .device
           .create_semaphore(&vk::SemaphoreCreateInfo::default(), None)
-          .map_err(|e| format!("semaphore create error: {e}"))?;
+          .map_err(|e| PresentManagerError::RefreshError(format!("semaphore create error: {e}")))?;
         self.acquire_image_semaphores[i] = new_semaphore;
       }
 
@@ -145,7 +162,7 @@ impl PresentManager {
           .vk_context
           .device
           .create_semaphore(&vk::SemaphoreCreateInfo::default(), None)
-          .map_err(|e| format!("semaphore create error: {e}"))?;
+          .map_err(|e| PresentManagerError::RefreshError(format!("semaphore create error: {e}")))?;
         self.image_blit_semaphores[i] = new_semaphore;
       }
 
@@ -161,7 +178,7 @@ impl PresentManager {
     vk_context: Arc<VkContext>,
     surface: vk::SurfaceKHR,
     size: vk::Extent2D,
-  ) -> Result<Self, String> {
+  ) -> Result<Self, PresentManagerError> {
     let swapchain_device =
       khr::swapchain::Device::new(&vk_context.vk_loaders.vk_driver, &vk_context.device);
 
@@ -174,7 +191,7 @@ impl PresentManager {
             .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER),
           None,
         )
-        .map_err(|e| format!("command pool create error: {e}"))?
+        .map_err(|e| PresentManagerError::PresentError(format!("command pool create error: {e}")))?
     };
     let mut out_data = Self {
       vk_context,
@@ -207,7 +224,7 @@ impl PresentManager {
     src_image_range: [vk::Offset3D; 2],
     filter: vk::Filter,
     mut wait_for: Vec<vk::Semaphore>,
-  ) -> Result<(), String> {
+  ) -> Result<(), PresentManagerError> {
     let image_idx = unsafe {
       match self.swapchain_device.acquire_next_image(
         self.swapchain,
@@ -218,13 +235,9 @@ impl PresentManager {
         Ok(x) => x.0 as usize,
         Err(e) => {
           return if e == vk::Result::SUBOPTIMAL_KHR || e == vk::Result::ERROR_OUT_OF_DATE_KHR {
-            self.refresh_swapchain()?;
-            self
-              .present_image_content(src_image, src_subresource, src_image_range, filter, wait_for)
-              .map_err(|e| "failed acquiring image twice")?;
-            Ok(())
+            Err(PresentManagerError::RefreshNeeded)
           } else {
-            Err(format!("error acquiring image to present: {e}"))
+            Err(PresentManagerError::PresentError(format!("error acquiring image to present: {e}")))
           }
         }
       }
@@ -287,7 +300,9 @@ impl PresentManager {
         .vk_context
         .device
         .begin_command_buffer(self.cmd_buffers[image_idx], &vk::CommandBufferBeginInfo::default())
-        .map_err(|e| format!("error beginning cmd buffer record: {e}"))?;
+        .map_err(|e| {
+          PresentManagerError::PresentError(format!("error beginning cmd buffer record: {e}"))
+        })?;
       self.vk_context.device.cmd_pipeline_barrier(
         self.cmd_buffers[image_idx],
         vk::PipelineStageFlags::BOTTOM_OF_PIPE,
@@ -327,7 +342,9 @@ impl PresentManager {
             .signal_semaphores(&[self.image_blit_semaphores[image_idx]])],
           vk::Fence::null(),
         )
-        .map_err(|e| format!("error submitting blit cmds: {e}"))?;
+        .map_err(|e| {
+          PresentManagerError::PresentError(format!("error submitting blit cmds: {e}"))
+        })?;
       self
         .swapchain_device
         .queue_present(
@@ -337,7 +354,7 @@ impl PresentManager {
             .swapchains(&[self.swapchain])
             .image_indices(&[image_idx as u32]),
         )
-        .map_err(|e| format!("present error: {e}"))?;
+        .map_err(|e| PresentManagerError::PresentError(format!("present error: {e}")))?;
     };
     Ok(())
   }
