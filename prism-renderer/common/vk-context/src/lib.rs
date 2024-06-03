@@ -1,3 +1,4 @@
+pub mod auto_drop_wrappers;
 #[cfg(debug_assertions)]
 mod debug_helpers;
 pub mod helpers;
@@ -5,10 +6,13 @@ mod vk_init_helpers;
 
 use std::sync::Arc;
 
+use crate::auto_drop_wrappers::{AdFence, AdSemaphore};
 #[cfg(debug_assertions)]
 pub use ash::ext;
 pub use ash::khr;
 pub use ash::vk;
+pub use gpu_allocator;
+use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
 pub use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
 pub struct VkLoaders {
@@ -26,16 +30,17 @@ impl VkLoaders {
     let layers = vec![
       #[cfg(debug_assertions)]
       c"VK_LAYER_KHRONOS_validation".as_ptr(),
-
     ];
     let instance_extensions = vec![
       #[cfg(debug_assertions)]
       ext::debug_utils::NAME.as_ptr(),
       #[cfg(target_os = "macos")]
-      khr::portability_enumeration::NAME.as_ptr()
+      khr::portability_enumeration::NAME.as_ptr(),
+      khr::surface::NAME.as_ptr(),
+      khr::win32_surface::NAME.as_ptr(),
     ];
     unsafe {
-      let loader = ash::Entry::load().map_err(|e| format!("vulkan load failed: {e}"))?;
+      let loader = ash::Entry::load().map_err(|e| format!("at vulkan load: {e}"))?;
       let vk_driver = vk_init_helpers::make_instance(&loader, layers, instance_extensions)?;
 
       #[cfg(debug_assertions)]
@@ -43,7 +48,7 @@ impl VkLoaders {
       #[cfg(debug_assertions)]
       let dbg_messenger = dbg_utils_driver
         .create_debug_utils_messenger(&debug_helpers::make_debug_mgr_create_info(), None)
-        .map_err(|e| format!("debug messenger init failed: {e}"))?;
+        .map_err(|e| format!("at debug messenger init: {e}"))?;
 
       let surface_driver = khr::surface::Instance::new(&loader, &vk_driver);
 
@@ -54,7 +59,7 @@ impl VkLoaders {
         #[cfg(debug_assertions)]
         dbg_utils_driver,
         vk_driver,
-        _loader: loader
+        _loader: loader,
       })
     }
   }
@@ -71,7 +76,13 @@ impl VkLoaders {
         window.window_handle().map_err(|_| "unsupported window".to_string())?.as_raw(),
         None,
       )
-      .map_err(|e| format!("surface create error: {e}"))
+      .map_err(|e| format!("at surface create: {e}"))
+    }
+  }
+
+  pub fn destroy_surface(&self, surface: vk::SurfaceKHR) {
+    unsafe {
+      self.surface_driver.destroy_surface(surface, None);
     }
   }
 }
@@ -79,13 +90,15 @@ impl VkLoaders {
 impl Drop for VkLoaders {
   fn drop(&mut self) {
     unsafe {
+      #[cfg(debug_assertions)]
+      self.dbg_utils_driver.destroy_debug_utils_messenger(self.dbg_messenger, None);
       self.vk_driver.destroy_instance(None);
     }
   }
 }
 
 pub struct VkContext {
-  pub device: ash::Device,
+  pub device: Arc<ash::Device>,
   pub graphics_q: vk::Queue,
   pub transfer_q: vk::Queue,
   pub present_q: vk::Queue,
@@ -143,7 +156,11 @@ impl VkContext {
     surface: vk::SurfaceKHR,
     preferred_gpu: Option<(u32, u32)>,
   ) -> Result<Self, String> {
-    let device_extensions = vec![khr::swapchain::NAME.as_ptr()];
+    let device_extensions = vec![
+      khr::swapchain::NAME.as_ptr(),
+      #[cfg(target_os = "macos")]
+      khr::portability_subset::NAME.as_ptr(),
+    ];
 
     unsafe {
       let (gpu, queue_ids) = Self::select_gpu(
@@ -160,7 +177,7 @@ impl VkContext {
         queue_ids,
       )?;
       Ok(Self {
-        device,
+        device: Arc::new(device),
         graphics_q: queues[0],
         transfer_q: queues[1],
         present_q: queues[2],
@@ -174,18 +191,44 @@ impl VkContext {
       })
     }
   }
+
+  pub fn create_allocator(&self) -> Result<Allocator, String> {
+    Allocator::new(&AllocatorCreateDesc {
+      instance: self.vk_loaders.vk_driver.clone(),
+      device: (*self.device).clone(),
+      physical_device: self.gpu,
+      debug_settings: Default::default(),
+      buffer_device_address: false,
+      allocation_sizes: Default::default(),
+    })
+    .map_err(|e| format!("at gpu mem allocator create: {e}"))
+  }
+
+  pub fn create_ad_semaphore(&self) -> Result<AdSemaphore, String> {
+    unsafe {
+      let semaphore = self
+        .device
+        .create_semaphore(&vk::SemaphoreCreateInfo::default(), None)
+        .map_err(|e| format!("at semaphore create: {e}"))?;
+      Ok(AdSemaphore { device: Arc::clone(&self.device), inner: semaphore })
+    }
+  }
+
+  pub fn create_ad_fence(&self) -> Result<AdFence, String> {
+    unsafe {
+      let fence = self
+        .device
+        .create_fence(&vk::FenceCreateInfo::default(), None)
+        .map_err(|e| format!("at fence create: {e}"))?;
+      Ok(AdFence { device: Arc::clone(&self.device), inner: fence })
+    }
+  }
 }
 
 impl Drop for VkContext {
   fn drop(&mut self) {
     unsafe {
       self.device.destroy_device(None);
-      #[cfg(debug_assertions)]
-      self
-        .vk_loaders
-        .dbg_utils_driver
-        .destroy_debug_utils_messenger(self.vk_loaders.dbg_messenger, None);
-      self.vk_loaders.vk_driver.destroy_instance(None);
     }
   }
 }

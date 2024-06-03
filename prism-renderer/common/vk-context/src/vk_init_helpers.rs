@@ -22,7 +22,7 @@ pub unsafe fn make_instance(
 
   driver
     .create_instance(&instance_create_info, None)
-    .map_err(|e| format!("instance create failed: {e}"))
+    .map_err(|e| format!("at instance create: {e}"))
 }
 
 pub fn select_g_queue(gpu_queue_props: &Vec<vk::QueueFamilyProperties>) -> Option<u32> {
@@ -143,15 +143,10 @@ pub fn select_g_t_p_c_queue_ids(
 pub unsafe fn create_device_and_queues(
   instance: &ash::Instance,
   gpu: vk::PhysicalDevice,
-  mut needed_extensions: Vec<*const c_char>,
+  needed_extensions: Vec<*const c_char>,
   features: vk::PhysicalDeviceFeatures,
   queue_indices: [u32; 4],
 ) -> Result<(ash::Device, [vk::Queue; 4]), String> {
-  #[cfg(target_os = "macos")]
-  if !needed_extensions.contains(&khr::portability_subset::NAME.as_ptr()) {
-    needed_extensions.push(khr::portability_subset::NAME.as_ptr());
-  }
-
   let queue_priorities: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
   let gpu_queue_props = instance.get_physical_device_queue_family_properties(gpu);
 
@@ -182,7 +177,7 @@ pub unsafe fn create_device_and_queues(
 
   let device = instance
     .create_device(gpu, &device_create_info, None)
-    .map_err(|e| format!("logic device init error: {e}"))?;
+    .map_err(|e| format!("at logic device init: {e}"))?;
 
   let mut queues = Vec::with_capacity(4);
   for x in queue_indices {

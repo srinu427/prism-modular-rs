@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use vk_context::auto_drop_wrappers::{AdFence, AdSemaphore};
 use vk_context::helpers::PWImage;
 use vk_context::{khr, vk, VkContext};
 
@@ -20,13 +21,15 @@ pub struct PresentManager {
   surface: vk::SurfaceKHR,
   cmd_pool: vk::CommandPool,
   cmd_buffers: Vec<vk::CommandBuffer>,
-  acquire_image_semaphores: Vec<vk::Semaphore>,
-  image_blit_semaphores: Vec<vk::Semaphore>,
+  acquire_image_sem_list: Vec<AdSemaphore>,
+  image_blit_sem_list: Vec<AdSemaphore>,
+  image_blit_fences: Vec<AdFence>,
   images: Vec<PWImage>,
   swapchain: vk::SwapchainKHR,
   resolution: vk::Extent2D,
-  image_being_presented: u32,
+  presenting_image: Option<u32>,
   images_init_done: [bool; 3],
+  cmd_buffer_init_done: [bool; 3],
 }
 
 impl PresentManager {
@@ -39,7 +42,7 @@ impl PresentManager {
     formats[0]
   }
 
-  fn refresh_swapchain(&mut self, new_size: vk::Extent2D) -> Result<(), PresentManagerError> {
+  pub fn refresh_swapchain(&mut self, new_size: vk::Extent2D) -> Result<(), PresentManagerError> {
     let (surface_format, surface_caps, present_mode) = unsafe {
       let surface_formats = self
         .vk_context
@@ -56,16 +59,14 @@ impl PresentManager {
         .surface_driver
         .get_physical_device_surface_capabilities(self.vk_context.gpu, self.surface)
         .map_err(|e| {
-          PresentManagerError::RefreshError(format!("error getting surface capabilities: {e}"))
+          PresentManagerError::RefreshError(format!("can't get surface capabilities: {e}"))
         })?;
       let present_modes = self
         .vk_context
         .vk_loaders
         .surface_driver
         .get_physical_device_surface_present_modes(self.vk_context.gpu, self.surface)
-        .map_err(|e| {
-          PresentManagerError::RefreshError(format!("Error getting present modes :{e}"))
-        })?;
+        .map_err(|e| PresentManagerError::RefreshError(format!("can't get present modes :{e}")))?;
       let present_mode = present_modes
         .iter()
         .find(|mode| **mode == vk::PresentModeKHR::MAILBOX)
@@ -109,12 +110,12 @@ impl PresentManager {
       let new_swapchain = self
         .swapchain_device
         .create_swapchain(&swapchain_info, None)
-        .map_err(|e| PresentManagerError::RefreshError(format!("error creating swapchain: {e}")))?;
+        .map_err(|e| PresentManagerError::RefreshError(format!("at swapchain create: {e}")))?;
       let new_images = self
         .swapchain_device
         .get_swapchain_images(new_swapchain)
         .map_err(|e| {
-          PresentManagerError::RefreshError(format!("error getting swapchain images: {e}"))
+          PresentManagerError::RefreshError(format!("at getting swapchain images: {e}"))
         })?
         .into_iter()
         .map(|x| PWImage {
@@ -124,47 +125,9 @@ impl PresentManager {
           resolution: vk::Extent3D::from(new_resolution).depth(1),
         })
         .collect::<Vec<_>>();
-
-      self.vk_context.device.free_command_buffers(self.cmd_pool, &self.cmd_buffers);
-      let new_cmd_buffers = self
-        .vk_context
-        .device
-        .allocate_command_buffers(
-          &vk::CommandBufferAllocateInfo::default()
-            .command_pool(self.cmd_pool)
-            .command_buffer_count(new_images.len() as u32)
-            .level(vk::CommandBufferLevel::PRIMARY),
-        )
-        .map_err(|e| {
-          PresentManagerError::RefreshError(format!("can't allocate command buffers: {e}"))
-        })?;
-      self.cmd_buffers = new_cmd_buffers;
-
-      for sem in self.acquire_image_semaphores.drain(..) {
-        self.vk_context.device.destroy_semaphore(sem, None);
-      }
-      self.acquire_image_semaphores.reserve(new_images.len());
-      for i in 0..new_images.len() {
-        let new_semaphore = self
-          .vk_context
-          .device
-          .create_semaphore(&vk::SemaphoreCreateInfo::default(), None)
-          .map_err(|e| PresentManagerError::RefreshError(format!("semaphore create error: {e}")))?;
-        self.acquire_image_semaphores[i] = new_semaphore;
-      }
-
-      for sem in self.image_blit_semaphores.drain(..) {
-        self.vk_context.device.destroy_semaphore(sem, None);
-      }
-      self.image_blit_semaphores.reserve(new_images.len());
-      for i in 0..new_images.len() {
-        let new_semaphore = self
-          .vk_context
-          .device
-          .create_semaphore(&vk::SemaphoreCreateInfo::default(), None)
-          .map_err(|e| PresentManagerError::RefreshError(format!("semaphore create error: {e}")))?;
-        self.image_blit_semaphores[i] = new_semaphore;
-      }
+      self
+        .swapchain_device
+        .destroy_swapchain(self.swapchain, None);
 
       self.resolution = new_resolution;
       self.swapchain = new_swapchain;
@@ -191,21 +154,57 @@ impl PresentManager {
             .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER),
           None,
         )
-        .map_err(|e| PresentManagerError::PresentError(format!("command pool create error: {e}")))?
+        .map_err(|e| PresentManagerError::InitError(format!("at command pool create: {e}")))?
     };
+
+    let cmd_buffers = unsafe {
+      vk_context
+        .device
+        .allocate_command_buffers(
+          &vk::CommandBufferAllocateInfo::default()
+            .command_pool(cmd_pool)
+            .command_buffer_count(3)
+            .level(vk::CommandBufferLevel::PRIMARY),
+        )
+        .map_err(|e| PresentManagerError::InitError(format!("at cmd buffer allocation: {e}")))?
+    };
+
+    let mut acquire_image_semaphores = Vec::with_capacity(3);
+    for _ in 0..3 {
+      let new_semaphore =
+        vk_context.create_ad_semaphore().map_err(|e| PresentManagerError::RefreshError(e))?;
+      acquire_image_semaphores.push(new_semaphore);
+    }
+
+    let mut image_blit_semaphores = Vec::with_capacity(3);
+    for _ in 0..3 {
+      let new_semaphore =
+        vk_context.create_ad_semaphore().map_err(|e| PresentManagerError::RefreshError(e))?;
+      image_blit_semaphores.push(new_semaphore);
+    }
+
+    let mut image_blit_fences = Vec::with_capacity(3);
+    for _ in 0..3 {
+      let new_fence =
+        vk_context.create_ad_fence().map_err(|e| PresentManagerError::RefreshError(e))?;
+      image_blit_fences.push(new_fence);
+    }
+
     let mut out_data = Self {
       vk_context,
       swapchain_device,
       surface,
       cmd_pool,
-      cmd_buffers: vec![],
-      acquire_image_semaphores: vec![],
-      image_blit_semaphores: vec![],
+      cmd_buffers,
+      acquire_image_sem_list: acquire_image_semaphores,
+      image_blit_sem_list: image_blit_semaphores,
+      image_blit_fences,
       images: vec![],
       swapchain: vk::SwapchainKHR::null(),
       resolution: vk::Extent2D::default(),
-      image_being_presented: 0,
+      presenting_image: None,
       images_init_done: [false; 3],
+      cmd_buffer_init_done: [false; 3],
     };
     out_data.refresh_swapchain(size)?;
     Ok(out_data)
@@ -228,8 +227,8 @@ impl PresentManager {
     let image_idx = unsafe {
       match self.swapchain_device.acquire_next_image(
         self.swapchain,
-        15000,
-        self.acquire_image_semaphores[self.image_being_presented as usize],
+        999999999,
+        self.acquire_image_sem_list[self.presenting_image.unwrap_or(0) as usize].inner,
         vk::Fence::null(),
       ) {
         Ok(x) => x.0 as usize,
@@ -237,8 +236,8 @@ impl PresentManager {
           return if e == vk::Result::SUBOPTIMAL_KHR || e == vk::Result::ERROR_OUT_OF_DATE_KHR {
             Err(PresentManagerError::RefreshNeeded)
           } else {
-            Err(PresentManagerError::PresentError(format!("error acquiring image to present: {e}")))
-          }
+            Err(PresentManagerError::PresentError(format!("at acquire image to present: {e}")))
+          };
         }
       }
     };
@@ -248,7 +247,7 @@ impl PresentManager {
       .dst_queue_family_index(self.vk_context.graphics_q_idx)
       .src_access_mask(vk::AccessFlags::MEMORY_READ)
       .dst_access_mask(vk::AccessFlags::MEMORY_WRITE)
-      .old_layout(if self.images_init_done[image_idx] {
+      .old_layout(if !self.images_init_done[image_idx] {
         vk::ImageLayout::UNDEFINED
       } else {
         vk::ImageLayout::PRESENT_SRC_KHR
@@ -296,12 +295,24 @@ impl PresentManager {
           .base_mip_level(0),
       );
     unsafe {
+      if self.cmd_buffer_init_done[image_idx] {
+        self
+          .vk_context
+          .device
+          .wait_for_fences(&[self.image_blit_fences[image_idx].inner], true, 15000000)
+          .map_err(|e| PresentManagerError::PresentError(format!("at fence wait: {e}")))?;
+        self
+          .vk_context
+          .device
+          .reset_fences(&[self.image_blit_fences[image_idx].inner])
+          .map_err(|e| PresentManagerError::PresentError(format!("at fence reset: {e}")))?;
+      }
       self
         .vk_context
         .device
         .begin_command_buffer(self.cmd_buffers[image_idx], &vk::CommandBufferBeginInfo::default())
         .map_err(|e| {
-          PresentManagerError::PresentError(format!("error beginning cmd buffer record: {e}"))
+          PresentManagerError::PresentError(format!("at cmd buffer record begin: {e}"))
         })?;
       self.vk_context.device.cmd_pipeline_barrier(
         self.cmd_buffers[image_idx],
@@ -330,7 +341,14 @@ impl PresentManager {
         &[],
         &[barrier_after_blit],
       );
-      wait_for.push(self.acquire_image_semaphores[self.image_being_presented as usize]);
+
+      wait_for.push(self.acquire_image_sem_list[self.presenting_image.unwrap_or(0) as usize].inner);
+
+      self
+        .vk_context
+        .device
+        .end_command_buffer(self.cmd_buffers[image_idx])
+        .map_err(|e| PresentManagerError::PresentError(format!("at ending cmd buffer: {e}")))?;
       self
         .vk_context
         .device
@@ -339,31 +357,55 @@ impl PresentManager {
           &[vk::SubmitInfo::default()
             .command_buffers(&[self.cmd_buffers[image_idx]])
             .wait_semaphores(&wait_for[..])
-            .signal_semaphores(&[self.image_blit_semaphores[image_idx]])],
-          vk::Fence::null(),
+            .signal_semaphores(&[self.image_blit_sem_list[image_idx].inner])
+            .wait_dst_stage_mask(
+              &vec![vk::PipelineStageFlags::BOTTOM_OF_PIPE; wait_for.len()][..],
+            )],
+          self.image_blit_fences[image_idx].inner,
         )
-        .map_err(|e| {
-          PresentManagerError::PresentError(format!("error submitting blit cmds: {e}"))
-        })?;
+        .map_err(|e| PresentManagerError::PresentError(format!("at blit cmd submit: {e}")))?;
       self
         .swapchain_device
         .queue_present(
           self.vk_context.present_q,
           &vk::PresentInfoKHR::default()
-            .wait_semaphores(&wait_for[..])
+            .wait_semaphores(&[self.image_blit_sem_list[image_idx].inner])
             .swapchains(&[self.swapchain])
             .image_indices(&[image_idx as u32]),
         )
-        .map_err(|e| PresentManagerError::PresentError(format!("present error: {e}")))?;
+        .map_err(|e| PresentManagerError::PresentError(format!("at present: {e}")))?;
     };
+    self.presenting_image = Some(image_idx as u32);
+    self.images_init_done[image_idx] = true;
+    self.cmd_buffer_init_done[image_idx] = true;
     Ok(())
+  }
+
+  pub fn wait_for_present(&mut self) {
+    unsafe {
+      if let Some(presenting_idx) = self.presenting_image {
+        let _ = self.vk_context.device.wait_for_fences(
+          &[self.image_blit_fences[presenting_idx as usize].inner],
+          true,
+          15000000,
+        );
+        let _ = self
+          .vk_context
+          .device
+          .reset_fences(&[self.image_blit_fences[presenting_idx as usize].inner]);
+      }
+    }
+    self.presenting_image = None;
   }
 }
 
 impl Drop for PresentManager {
   fn drop(&mut self) {
+    self.wait_for_present();
     unsafe {
+      self.vk_context.device.destroy_command_pool(self.cmd_pool, None);
       self.swapchain_device.destroy_swapchain(self.swapchain, None);
+      self.vk_context.vk_loaders.surface_driver.destroy_surface(self.surface, None);
     }
   }
 }

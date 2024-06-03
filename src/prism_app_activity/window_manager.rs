@@ -1,25 +1,34 @@
 use std::sync::Arc;
+use prism_renderer::Renderer;
 use winit::window::Window;
-use prism_renderer::presentation::PresentManager;
-use prism_renderer::VkLoaders;
-use prism_renderer::{vk, Renderer};
 
 pub struct WindowManager {
-  window: Window,
   renderer: Renderer,
-  present_manager: PresentManager,
+  window: Arc<Window>,
 }
 
 impl WindowManager {
-  pub fn new(vk_loaders: Arc<VkLoaders>, window: Window) -> Result<Self, String> {
-    let surface = vk_loaders.make_surface(&window)?;
-    let renderer = Renderer::new(Arc::clone(&vk_loaders), surface)?;
+  pub fn new(window: Window) -> Result<Self, String> {
     let window_size = window.inner_size();
-    let present_manager = renderer.make_presentation_manager(
-      surface,
-      vk::Extent2D::default().width(window_size.width).height(window_size.height),
-    )?;
+    let renderer = Renderer::new(&window, window_size.width, window_size.height)?;
 
-    Ok(Self { window, renderer, present_manager })
+    Ok(Self { window: Arc::new(window), renderer })
+  }
+
+  pub fn refresh_surface(&mut self) -> Result<(), String> {
+    let window_size = self.window.inner_size();
+    self.renderer.refresh_surface(&self.window, window_size.width, window_size.height)
+  }
+
+  pub fn update_resolution(&mut self) -> Result<(), String> {
+    let window_size = self.window.inner_size();
+    self.renderer.resize_swapchain(window_size.width, window_size.height)
+  }
+
+  pub fn redraw(&mut self) {
+    if self.renderer.draw() {
+      let _ = self.update_resolution().inspect_err(|e| println!("{e}"));
+      self.redraw();
+    }
   }
 }
