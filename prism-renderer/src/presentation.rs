@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use vk_context::auto_drop_wrappers::{AdFence, AdSemaphore};
 use vk_context::helpers::PWImage;
-use vk_context::{khr, vk, VkContext};
+use vk_context::{ash::khr, ash::vk, VkContext};
 
 #[derive(thiserror::Error, Debug)]
 pub enum PresentManagerError {

@@ -1,11 +1,11 @@
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use vk_context::gpu_allocator::vulkan::{
   Allocation, AllocationCreateDesc, AllocationScheme, Allocator,
 };
 use vk_context::gpu_allocator::MemoryLocation;
 use vk_context::helpers::PWImage;
-use vk_context::{vk, VkContext};
+use vk_context::{ash, ash::vk, VkContext};
 
 pub struct TransferManager {
   cmd_pool: vk::CommandPool,
@@ -23,19 +23,23 @@ impl TransferManager {
             .flags(vk::CommandPoolCreateFlags::TRANSIENT),
           None,
         )
-        .map_err(|e| format!("cmd pool create error: {e}"))?
+        .map_err(|e| format!("at cmd pool create: {e}"))?
     };
 
     Ok(Self { cmd_pool, vk_context })
   }
 
+  pub fn get_arc_device(&self) -> Arc<ash::Device> {
+    Arc::clone(&self.vk_context.device)
+  }
+
   pub fn load_image_from_file(
     &self,
-    allocator: &mut Allocator,
+    allocator: Arc<Mutex<Allocator>>,
     path: &Path,
     name: &str,
   ) -> Result<(PWImage, Allocation), String> {
-    let image_info = image::open(path).map_err(|e| format!("error loading image file: {e}"))?;
+    let image_info = image::open(path).map_err(|e| format!("at loading image file: {e}"))?;
     let image_rgba8 = image_info.to_rgba8();
 
     let (image, allocation) = unsafe {
@@ -61,11 +65,13 @@ impl TransferManager {
             ),
           None,
         )
-        .map_err(|e| format!("error creating tex image: {e}"))?;
+        .map_err(|e| format!("at creating tex image: {e}"))?;
 
       let tex_mem_req = self.vk_context.device.get_image_memory_requirements(image);
 
       let allocation = allocator
+        .lock()
+        .map_err(|e| format!("at getting allocator lock: {e}"))?
         .allocate(&AllocationCreateDesc {
           name,
           requirements: tex_mem_req,
@@ -73,13 +79,13 @@ impl TransferManager {
           linear: false,
           allocation_scheme: AllocationScheme::GpuAllocatorManaged,
         })
-        .map_err(|e| format!("error allocating mem: {e}"))?;
+        .map_err(|e| format!("at allocating mem: {e}"))?;
 
       self
         .vk_context
         .device
         .bind_image_memory(image, allocation.memory(), allocation.offset())
-        .map_err(|e| format!("tex image mem bind error: {e}"))?;
+        .map_err(|e| format!("at tex image mem bind: {e}"))?;
 
       (image, allocation)
     };
@@ -94,11 +100,13 @@ impl TransferManager {
             .size(image_rgba8.len() as vk::DeviceSize),
           None,
         )
-        .map_err(|e| format!("Error creating staging buffer: {e}"))?;
+        .map_err(|e| format!("at creating staging buffer: {e}"))?;
       let stage_buffer_mem_req =
         self.vk_context.device.get_buffer_memory_requirements(stage_buffer);
 
       let stage_buffer_allocation = allocator
+        .lock()
+        .map_err(|e| format!("at getting allocator lock: {e}"))?
         .allocate(&AllocationCreateDesc {
           name: &format!("{name}_stage_buffer"),
           requirements: stage_buffer_mem_req,
@@ -106,7 +114,7 @@ impl TransferManager {
           linear: false,
           allocation_scheme: AllocationScheme::GpuAllocatorManaged,
         })
-        .map_err(|e| format!("gpu mem alloc error: {e}"))?;
+        .map_err(|e| format!("at gpu mem alloc: {e}"))?;
       self
         .vk_context
         .device
@@ -115,14 +123,14 @@ impl TransferManager {
           stage_buffer_allocation.memory(),
           stage_buffer_allocation.offset(),
         )
-        .map_err(|e| format!("tex image mem bind error: {e}"))?;
+        .map_err(|e| format!("at stage buffer mem bind: {e}"))?;
 
       (stage_buffer, stage_buffer_allocation)
     };
 
     stage_buffer_allocation
       .mapped_slice_mut()
-      .ok_or("Error mapping stage buffer memory to CPU".to_string())?
+      .ok_or("at mapping stage buffer memory to CPU".to_string())?
       .copy_from_slice(image_rgba8.as_raw().as_slice());
 
     unsafe {
@@ -135,13 +143,13 @@ impl TransferManager {
             .level(vk::CommandBufferLevel::PRIMARY)
             .command_buffer_count(1),
         )
-        .map_err(|e| format!("error creating command buffer: {e}"))?[0];
+        .map_err(|e| format!("at creating command buffer: {e}"))?[0];
 
       self
         .vk_context
         .device
         .begin_command_buffer(cmd_buffer, &vk::CommandBufferBeginInfo::default())
-        .map_err(|e| format!("error starting command buffer: {e}"))?;
+        .map_err(|e| format!("at starting command buffer: {e}"))?;
 
       self.vk_context.device.cmd_pipeline_barrier(
         cmd_buffer,
@@ -214,13 +222,13 @@ impl TransferManager {
         .vk_context
         .device
         .end_command_buffer(cmd_buffer)
-        .map_err(|e| format!("error ending command buffer: {e}"))?;
+        .map_err(|e| format!("at ending command buffer: {e}"))?;
 
       let upload_fence = self
         .vk_context
         .device
         .create_fence(&vk::FenceCreateInfo::default(), None)
-        .map_err(|e| format!("error creating fence: {e}"))?;
+        .map_err(|e| format!("at creating fence: {e}"))?;
 
       self
         .vk_context
@@ -230,21 +238,23 @@ impl TransferManager {
           &[vk::SubmitInfo::default().command_buffers(&[cmd_buffer])],
           upload_fence,
         )
-        .map_err(|e| format!("error copying data to image: {e}"))?;
+        .map_err(|e| format!("at copying data to image: {e}"))?;
 
       self
         .vk_context
         .device
-        .wait_for_fences(&[upload_fence], true, 1500000000)
+        .wait_for_fences(&[upload_fence], true, u64::MAX)
         .inspect_err(|e| println!("{e}"))
-        .map_err(|e| format!("error waiting for fence: {e}"))?;
+        .map_err(|e| format!("at waiting for fence: {e}"))?;
       self.vk_context.device.destroy_fence(upload_fence, None);
       self.vk_context.device.destroy_buffer(stage_buffer, None);
     }
 
     allocator
+      .lock()
+      .map_err(|e| format!("at getting allocator lock: {e}"))?
       .free(stage_buffer_allocation)
-      .map_err(|e| format!("error freeing stage buffer memory: {e}"))?;
+      .map_err(|e| format!("at freeing stage buffer memory: {e}"))?;
 
     Ok((
       PWImage {

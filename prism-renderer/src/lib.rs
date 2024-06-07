@@ -1,21 +1,20 @@
 mod presentation;
-mod transfer;
 
-use crate::presentation::PresentManagerError;
-use crate::transfer::TransferManager;
+use presentation::PresentManagerError;
 use presentation::PresentManager;
+use transfer_manager::TransferManager;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use vk_context::gpu_allocator::vulkan::{Allocation, Allocator};
 use vk_context::helpers::PWImage;
-use vk_context::vk;
+use vk_context::ash::vk;
 use vk_context::VkLoaders;
 use vk_context::{HasDisplayHandle, HasWindowHandle};
 
 pub struct Renderer {
   image: PWImage,
   allocation: Allocation,
-  allocator: Allocator,
+  allocator: Arc<Mutex<Allocator>>,
   transfer_manager: TransferManager,
   present_manager: PresentManager,
   vk_context: Arc<vk_context::VkContext>,
@@ -39,11 +38,11 @@ impl Renderer {
 
     let transfer_manager = TransferManager::new(Arc::clone(&vk_context))?;
 
-    let mut allocator = vk_context.create_allocator()?;
+    let allocator = Arc::new(Mutex::new(vk_context.create_allocator()?));
 
     let image_path = PathBuf::from("./tile_tex.png");
     let (image, allocation) =
-      transfer_manager.load_image_from_file(&mut allocator, &image_path, "display_img")?;
+      transfer_manager.load_image_from_file(Arc::clone(&allocator), &image_path, "display_img")?;
     Ok(Self { vk_context, present_manager, transfer_manager, image, allocator, allocation })
   }
 

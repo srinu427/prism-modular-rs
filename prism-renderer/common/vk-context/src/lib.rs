@@ -8,9 +8,10 @@ use std::sync::Arc;
 
 use crate::auto_drop_wrappers::{AdFence, AdSemaphore};
 #[cfg(debug_assertions)]
-pub use ash::ext;
-pub use ash::khr;
-pub use ash::vk;
+use ash::ext;
+use ash::khr;
+use ash::vk;
+pub use ash;
 pub use gpu_allocator;
 use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
 pub use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
