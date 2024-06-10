@@ -35,10 +35,20 @@ impl VkLoaders {
     let instance_extensions = vec![
       #[cfg(debug_assertions)]
       ext::debug_utils::NAME.as_ptr(),
+      khr::get_physical_device_properties2::NAME.as_ptr(),
+      khr::surface::NAME.as_ptr(),
+      #[cfg(target_os = "windows")]
+      khr::win32_surface::NAME.as_ptr(),
+      #[cfg(target_os = "linux")]
+      khr::xlib_surface::NAME.as_ptr(),
+      #[cfg(target_os = "linux")]
+      khr::wayland_surface::NAME.as_ptr(),
       #[cfg(target_os = "macos")]
       khr::portability_enumeration::NAME.as_ptr(),
-      khr::surface::NAME.as_ptr(),
-      khr::win32_surface::NAME.as_ptr(),
+      #[cfg(target_os = "macos")]
+      ext::metal_surface::NAME.as_ptr(),
+      #[cfg(target_os = "android")]
+      khr::android_surface::NAME.as_ptr(),
     ];
     unsafe {
       let loader = ash::Entry::load().map_err(|e| format!("at vulkan load: {e}"))?;

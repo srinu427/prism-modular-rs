@@ -20,6 +20,10 @@ pub unsafe fn make_instance(
     .enabled_extension_names(&needed_extensions[..])
     .enabled_layer_names(&needed_layers[..]);
 
+  #[cfg(target_os = "macos")]
+  let instance_create_info = instance_create_info
+    .flags(vk::InstanceCreateFlags::ENUMERATE_PORTABILITY_KHR);
+
   driver
     .create_instance(&instance_create_info, None)
     .map_err(|e| format!("at instance create: {e}"))

@@ -54,7 +54,12 @@ impl ApplicationHandler for PrismAppActivity {
       WindowEvent::ActivationTokenDone { .. } => {}
       WindowEvent::Resized(_) => {}
       WindowEvent::Moved(_) => {}
-      WindowEvent::CloseRequested => event_loop.exit(),
+      WindowEvent::CloseRequested => {
+        // https://github.com/rust-windowing/winit/issues/3668
+        #[cfg(target_os = "macos")]
+        let _ = self.window_manager.take();
+        event_loop.exit();
+      },
       WindowEvent::Destroyed => {}
       WindowEvent::DroppedFile(_) => {}
       WindowEvent::HoveredFile(_) => {}
