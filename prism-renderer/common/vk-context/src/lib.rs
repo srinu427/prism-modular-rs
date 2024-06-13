@@ -6,12 +6,12 @@ mod vk_init_helpers;
 
 use std::sync::Arc;
 
-use crate::auto_drop_wrappers::{AdFence, AdSemaphore};
+pub use ash;
 #[cfg(debug_assertions)]
 use ash::ext;
 use ash::khr;
 use ash::vk;
-pub use ash;
+use auto_drop_wrappers::{ADRenderPassBuilder, AdFence, AdSemaphore};
 pub use gpu_allocator;
 use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
 pub use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
@@ -233,6 +233,13 @@ impl VkContext {
         .map_err(|e| format!("at fence create: {e}"))?;
       Ok(AdFence { device: Arc::clone(&self.device), inner: fence })
     }
+  }
+
+  pub fn create_ad_render_pass_builder(
+    &self,
+    flags: vk::RenderPassCreateFlags,
+  ) -> ADRenderPassBuilder {
+    ADRenderPassBuilder::new(Arc::clone(&self.device), flags)
   }
 }
 

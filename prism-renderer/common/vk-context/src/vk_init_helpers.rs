@@ -21,8 +21,8 @@ pub unsafe fn make_instance(
     .enabled_layer_names(&needed_layers[..]);
 
   #[cfg(target_os = "macos")]
-  let instance_create_info = instance_create_info
-    .flags(vk::InstanceCreateFlags::ENUMERATE_PORTABILITY_KHR);
+  let instance_create_info =
+    instance_create_info.flags(vk::InstanceCreateFlags::ENUMERATE_PORTABILITY_KHR);
 
   driver
     .create_instance(&instance_create_info, None)
