@@ -61,7 +61,7 @@ pub struct ADRenderPassBuilder<'a> {
   sub_pass_dependencies: Vec<vk::SubpassDependency>,
 }
 
-impl ADRenderPassBuilder {
+impl<'a> ADRenderPassBuilder<'a> {
   pub fn new(device: Arc<ash::Device>, flags: vk::RenderPassCreateFlags) -> Self {
     Self {
       device,
@@ -77,7 +77,7 @@ impl ADRenderPassBuilder {
     self
   }
 
-  pub fn add_sub_pass(mut self, sub_pass_description: vk::SubpassDescription) -> Self {
+  pub fn add_sub_pass(mut self, sub_pass_description: vk::SubpassDescription<'a>) -> Self {
     self.sub_pass_descriptions.push(sub_pass_description);
     self
   }
