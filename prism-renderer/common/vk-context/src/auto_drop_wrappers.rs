@@ -42,7 +42,7 @@ impl Drop for AdCommandPool {
 
 pub struct ADRenderPass {
   device: Arc<ash::Device>,
-  inner: vk::RenderPass,
+  pub inner: vk::RenderPass,
 }
 
 impl Drop for ADRenderPass {

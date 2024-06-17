@@ -125,9 +125,7 @@ impl PresentManager {
           resolution: vk::Extent3D::from(new_resolution).depth(1),
         })
         .collect::<Vec<_>>();
-      self
-        .swapchain_device
-        .destroy_swapchain(self.swapchain, None);
+      self.swapchain_device.destroy_swapchain(self.swapchain, None);
 
       self.resolution = new_resolution;
       self.swapchain = new_swapchain;

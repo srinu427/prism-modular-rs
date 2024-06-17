@@ -7,7 +7,7 @@ layout(location = 3) in vec4 in_uv_coordinates;
 
 layout(location = 0) out vec4 frag_color;
 
-layout(binding = 0) uniform CameraTransform{
+layout(set = 0, binding = 0) uniform CameraTransform{
     mat4 view;
     mat4 proj;
 } cam_transform;

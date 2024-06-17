@@ -1,17 +1,26 @@
 mod presentation;
 
-use presentation::PresentManagerError;
 use presentation::PresentManager;
-use transfer_manager::TransferManager;
+use presentation::PresentManagerError;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use vk_context::gpu_allocator::vulkan::{Allocation, Allocator};
-use vk_context::helpers::PWImage;
+use transfer_manager::TransferManager;
+use vert_mesh_pbr::structs::PbrMaterial;
 use vk_context::ash::vk;
+use vk_context::auto_drop_wrappers::ADRenderPass;
+use vk_context::gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocationScheme, Allocator};
+use vk_context::helpers::PWImage;
 use vk_context::VkLoaders;
 use vk_context::{HasDisplayHandle, HasWindowHandle};
+use vk_context::gpu_allocator::MemoryLocation;
 
 pub struct Renderer {
+  mesh_render_pass: ADRenderPass,
+  material: PbrMaterial,
+  attachment_image: PWImage,
+  attachment_image_allocation: Allocation,
+  attachment_image_view: vk::ImageView,
+  mesh_frame_buffer: vk::Framebuffer,
   image: PWImage,
   allocation: Allocation,
   allocator: Arc<Mutex<Allocator>>,
@@ -43,7 +52,157 @@ impl Renderer {
     let image_path = PathBuf::from("./tile_tex.png");
     let (image, allocation) =
       transfer_manager.load_image_from_file(Arc::clone(&allocator), &image_path, "display_img")?;
-    Ok(Self { vk_context, present_manager, transfer_manager, image, allocator, allocation })
+
+    let material = PbrMaterial::new(
+      &transfer_manager,
+      Arc::clone(&allocator),
+      "tile_material",
+      "./tile_tex.png".as_ref()
+    )?;
+
+    let mesh_render_pass = vk_context
+      .create_ad_render_pass_builder(vk::RenderPassCreateFlags::default())
+      .add_attachment(
+        vk::AttachmentDescription::default()
+          .format(vk::Format::R8G8B8A8_UNORM)
+          .samples(vk::SampleCountFlags::TYPE_1)
+          .initial_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+          .final_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL),
+      )
+      .add_sub_pass(
+        vk::SubpassDescription::default()
+          .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
+          .color_attachments(&[vk::AttachmentReference::default()
+            .attachment(0)
+            .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)]),
+      )
+      .add_sub_pass_dependency(
+        vk::SubpassDependency::default()
+          .src_subpass(vk::SUBPASS_EXTERNAL)
+          .dst_subpass(0)
+          .src_stage_mask(vk::PipelineStageFlags::TRANSFER)
+          .dst_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
+          .src_access_mask(vk::AccessFlags::TRANSFER_READ)
+          .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE),
+      )
+      .add_sub_pass_dependency(
+        vk::SubpassDependency::default()
+          .src_subpass(0)
+          .dst_subpass(vk::SUBPASS_EXTERNAL)
+          .src_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
+          .dst_stage_mask(vk::PipelineStageFlags::TRANSFER)
+          .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+          .dst_access_mask(vk::AccessFlags::TRANSFER_READ),
+      )
+      .build()?;
+
+    let (attachment_image, attachment_image_allocation) = unsafe {
+      let image = vk_context
+        .device
+        .create_image(
+          &vk::ImageCreateInfo::default()
+            .image_type(vk::ImageType::TYPE_2D)
+            .format(vk::Format::R8G8B8A8_UNORM)
+            .usage(vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_SRC)
+            .initial_layout(vk::ImageLayout::UNDEFINED)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE)
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .tiling(vk::ImageTiling::OPTIMAL)
+            .mip_levels(1)
+            .array_layers(1)
+            .extent(
+              vk::Extent3D::default()
+                .width(1280)
+                .height(720)
+                .depth(1),
+            ),
+          None,
+        )
+        .map_err(|e| format!("at creating attachment image: {e}"))?;
+
+      let tex_mem_req = vk_context.device.get_image_memory_requirements(image);
+
+      let allocation = allocator
+        .lock()
+        .map_err(|e| format!("at getting allocator lock: {e}"))?
+        .allocate(&AllocationCreateDesc {
+          name: "attachment_image_allocation",
+          requirements: tex_mem_req,
+          location: MemoryLocation::GpuOnly,
+          linear: false,
+          allocation_scheme: AllocationScheme::GpuAllocatorManaged,
+        })
+        .map_err(|e| format!("at allocating mem: {e}"))?;
+
+      vk_context
+        .device
+        .bind_image_memory(image, allocation.memory(), allocation.offset())
+        .map_err(|e| format!("at attachment image mem bind: {e}"))?;
+
+      let pw_image = PWImage {
+        inner: image,
+        format: vk::Format::R8G8B8A8_UNORM,
+        _type: vk::ImageType::TYPE_2D,
+        resolution: vk::Extent3D {
+          width: 1280,
+          height: 720,
+          depth: 1,
+        },
+      };
+      (pw_image, allocation)
+    };
+
+    let attachment_image_view = unsafe {
+      vk_context
+        .device
+        .create_image_view(
+          &vk::ImageViewCreateInfo::default()
+            .format(attachment_image.format)
+            .image(attachment_image.inner)
+            .view_type(vk::ImageViewType::TYPE_2D)
+            .components(vk::ComponentMapping::default())
+            .subresource_range(
+              vk::ImageSubresourceRange::default()
+                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                .level_count(1)
+                .layer_count(1)
+                .base_mip_level(0)
+                .base_array_layer(0)
+            ),
+          None
+        )
+        .map_err(|e| format!("at attachment image view create: {e}"))?
+    };
+
+    let mesh_frame_buffer = unsafe {
+      vk_context
+        .device
+        .create_framebuffer(
+          &vk::FramebufferCreateInfo::default()
+            .render_pass(mesh_render_pass.inner)
+            .attachments(&[attachment_image_view])
+            .width(1280)
+            .height(720)
+            .layers(1),
+          None
+        )
+        .map_err(|e| format!("at frame buffer create: {e}"))?
+    };
+
+    Ok(Self {
+      mesh_render_pass,
+      material,
+      vk_context,
+      present_manager,
+      transfer_manager,
+      image,
+      allocator,
+      allocation,
+      attachment_image,
+      attachment_image_allocation,
+      attachment_image_view,
+      mesh_frame_buffer,
+    })
   }
 
   pub fn refresh_surface(
@@ -85,7 +244,7 @@ impl Renderer {
       .map_err(|e| format!("{e}"))
   }
 
-  pub fn draw(&mut self) -> bool {
+  pub fn draw(&mut self) -> Result<bool, String> {
     match self.present_manager.present_image_content(
       self.image,
       vk::ImageSubresourceLayers::default()
@@ -108,11 +267,11 @@ impl Renderer {
       Err(e) => match e {
         PresentManagerError::InitError(_) => {}
         PresentManagerError::RefreshError(_) => {}
-        PresentManagerError::RefreshNeeded => return true,
+        PresentManagerError::RefreshNeeded => return Ok(true),
         PresentManagerError::PresentError(_) => {}
       },
     };
-    false
+    Ok(false)
   }
 }
 
@@ -121,6 +280,10 @@ impl Drop for Renderer {
     unsafe {
       self.present_manager.wait_for_present();
       self.vk_context.device.destroy_image(self.image.inner, None);
+      self.vk_context.device.destroy_framebuffer(self.mesh_frame_buffer, None);
+      self.vk_context.device.destroy_image_view(self.attachment_image_view, None);
+      self.vk_context.device.destroy_image(self.attachment_image.inner, None);
+
     }
   }
 }
