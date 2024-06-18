@@ -305,48 +305,41 @@ impl PresentManager {
           .reset_fences(&[self.image_blit_fences[image_idx].inner])
           .map_err(|e| PresentManagerError::PresentError(format!("at fence reset: {e}")))?;
       }
+
       self
         .vk_context
-        .device
-        .begin_command_buffer(self.cmd_buffers[image_idx], &vk::CommandBufferBeginInfo::default())
-        .map_err(|e| {
-          PresentManagerError::PresentError(format!("at cmd buffer record begin: {e}"))
-        })?;
-      self.vk_context.device.cmd_pipeline_barrier(
-        self.cmd_buffers[image_idx],
-        vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-        vk::PipelineStageFlags::TRANSFER,
-        vk::DependencyFlags::BY_REGION,
-        &[],
-        &[],
-        &[barrier_before_blit],
-      );
-      self.vk_context.device.cmd_blit_image(
-        self.cmd_buffers[image_idx],
-        src_image.inner,
-        vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-        self.images[image_idx].inner,
-        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-        &[blit_region],
-        filter,
-      );
-      self.vk_context.device.cmd_pipeline_barrier(
-        self.cmd_buffers[image_idx],
-        vk::PipelineStageFlags::TRANSFER,
-        vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-        vk::DependencyFlags::BY_REGION,
-        &[],
-        &[],
-        &[barrier_after_blit],
-      );
+        .create_cmd_buffer_recorder(self.cmd_buffers[image_idx])
+        .begin(vk::CommandBufferBeginInfo::default())
+        .map_err(|e| PresentManagerError::PresentError(format!("at blit cmd record begin: {e}")))?
+        .pipeline_barrier(
+          vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+          vk::PipelineStageFlags::TRANSFER,
+          vk::DependencyFlags::BY_REGION,
+          vec![],
+          vec![],
+          vec![barrier_before_blit],
+        )
+        .blit_image(
+          src_image.inner,
+          vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+          self.images[image_idx].inner,
+          vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+          vec![blit_region],
+          filter,
+        )
+        .pipeline_barrier(
+          vk::PipelineStageFlags::TRANSFER,
+          vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+          vk::DependencyFlags::BY_REGION,
+          vec![],
+          vec![],
+          vec![barrier_after_blit],
+        )
+        .end()
+        .map_err(|e| PresentManagerError::PresentError(format!("at blit cmd record end: {e}")))?;
 
       wait_for.push(self.acquire_image_sem_list[self.presenting_image.unwrap_or(0) as usize].inner);
 
-      self
-        .vk_context
-        .device
-        .end_command_buffer(self.cmd_buffers[image_idx])
-        .map_err(|e| PresentManagerError::PresentError(format!("at ending cmd buffer: {e}")))?;
       self
         .vk_context
         .device

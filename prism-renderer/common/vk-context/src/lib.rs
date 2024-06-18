@@ -15,6 +15,7 @@ use auto_drop_wrappers::{ADRenderPassBuilder, AdFence, AdSemaphore};
 pub use gpu_allocator;
 use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
 pub use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
+use crate::helpers::CommandBufferRecorder;
 
 pub struct VkLoaders {
   pub surface_driver: khr::surface::Instance,
@@ -240,6 +241,10 @@ impl VkContext {
     flags: vk::RenderPassCreateFlags,
   ) -> ADRenderPassBuilder {
     ADRenderPassBuilder::new(Arc::clone(&self.device), flags)
+  }
+
+  pub fn create_cmd_buffer_recorder(&self, cmd_buffer: vk::CommandBuffer) -> CommandBufferRecorder {
+    CommandBufferRecorder::new(Arc::clone(&self.device), cmd_buffer)
   }
 }
 

@@ -26,9 +26,13 @@ impl WindowManager {
   }
 
   pub fn redraw(&mut self) {
-    if self.renderer.draw() {
-      let _ = self.update_resolution().inspect_err(|e| println!("{e}"));
-      self.redraw();
-    }
+    let _ = self.renderer.draw()
+      .map(|x| {
+        if x {
+          let _ = self.update_resolution().inspect_err(|e| println!("{e}"));
+          self.redraw();
+        }
+      })
+      .inspect_err(|e| println!("at redraw: {e}"));
   }
 }

@@ -21,6 +21,8 @@ pub struct Renderer {
   attachment_image_allocation: Allocation,
   attachment_image_view: vk::ImageView,
   mesh_frame_buffer: vk::Framebuffer,
+  render_cmd_pool: vk::CommandPool,
+  render_cmd_buffer: vk::CommandBuffer,
   image: PWImage,
   allocation: Allocation,
   allocator: Arc<Mutex<Allocator>>,
@@ -189,6 +191,30 @@ impl Renderer {
         .map_err(|e| format!("at frame buffer create: {e}"))?
     };
 
+    let render_cmd_pool = unsafe {
+      vk_context
+        .device
+        .create_command_pool(
+          &vk::CommandPoolCreateInfo::default()
+            .queue_family_index(vk_context.graphics_q_idx)
+            .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER),
+          None,
+        )
+        .map_err(|e| format!("at cmd pool create: {e}"))?
+    };
+
+    let render_cmd_buffer = unsafe {
+      vk_context
+        .device
+        .allocate_command_buffers(
+          &vk::CommandBufferAllocateInfo::default()
+            .command_pool(render_cmd_pool)
+            .level(vk::CommandBufferLevel::PRIMARY)
+            .command_buffer_count(1),
+        )
+        .map_err(|e| format!("at creating command buffer: {e}"))?[0]
+    };
+
     Ok(Self {
       mesh_render_pass,
       material,
@@ -202,6 +228,8 @@ impl Renderer {
       attachment_image_allocation,
       attachment_image_view,
       mesh_frame_buffer,
+      render_cmd_pool,
+      render_cmd_buffer,
     })
   }
 
@@ -245,6 +273,25 @@ impl Renderer {
   }
 
   pub fn draw(&mut self) -> Result<bool, String> {
+    self.vk_context.create_cmd_buffer_recorder(self.render_cmd_buffer)
+      .begin(vk::CommandBufferBeginInfo::default())?
+      .begin_render_pass(
+        vk::RenderPassBeginInfo::default()
+          .render_pass(self.mesh_render_pass.inner)
+          .framebuffer(self.mesh_frame_buffer)
+          .render_area(
+            vk::Rect2D::default()
+              .extent(
+                vk::Extent2D::default()
+                  .width(self.attachment_image.resolution.width)
+                  .height(self.attachment_image.resolution.height)
+              )
+          ),
+        vk::SubpassContents::INLINE
+      )
+      .end_render_pass()
+      .end()?;
+
     match self.present_manager.present_image_content(
       self.image,
       vk::ImageSubresourceLayers::default()
@@ -280,10 +327,10 @@ impl Drop for Renderer {
     unsafe {
       self.present_manager.wait_for_present();
       self.vk_context.device.destroy_image(self.image.inner, None);
+      self.vk_context.device.destroy_command_pool(self.render_cmd_pool, None);
       self.vk_context.device.destroy_framebuffer(self.mesh_frame_buffer, None);
       self.vk_context.device.destroy_image_view(self.attachment_image_view, None);
       self.vk_context.device.destroy_image(self.attachment_image.inner, None);
-
     }
   }
 }
