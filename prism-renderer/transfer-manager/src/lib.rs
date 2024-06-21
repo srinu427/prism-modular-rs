@@ -6,25 +6,21 @@ use vk_context::gpu_allocator::vulkan::{
 use vk_context::gpu_allocator::MemoryLocation;
 use vk_context::helpers::PWImage;
 use vk_context::{ash, ash::vk, VkContext};
+use vk_context::auto_drop_wrappers::AdCommandPool;
 
 pub struct TransferManager {
-  cmd_pool: vk::CommandPool,
+  cmd_pool: AdCommandPool,
   vk_context: Arc<VkContext>,
 }
 
 impl TransferManager {
   pub fn new(vk_context: Arc<VkContext>) -> Result<Self, String> {
-    let cmd_pool = unsafe {
-      vk_context
-        .device
-        .create_command_pool(
-          &vk::CommandPoolCreateInfo::default()
+    let cmd_pool = vk_context
+        .create_ad_command_pool(
+          vk::CommandPoolCreateInfo::default()
             .queue_family_index(vk_context.transfer_q_idx)
             .flags(vk::CommandPoolCreateFlags::TRANSIENT),
-          None,
-        )
-        .map_err(|e| format!("at cmd pool create: {e}"))?
-    };
+        )?;
 
     Ok(Self { cmd_pool, vk_context })
   }
@@ -133,120 +129,96 @@ impl TransferManager {
       .ok_or("at mapping stage buffer memory to CPU".to_string())?
       .copy_from_slice(image_rgba8.as_raw().as_slice());
 
-    unsafe {
-      let cmd_buffer = self
-        .vk_context
-        .device
-        .allocate_command_buffers(
-          &vk::CommandBufferAllocateInfo::default()
-            .command_pool(self.cmd_pool)
-            .level(vk::CommandBufferLevel::PRIMARY)
-            .command_buffer_count(1),
+    let cmd_buffer = self
+      .cmd_pool
+      .allocate_command_buffers(vk::CommandBufferLevel::PRIMARY, 1)?
+      .swap_remove(0);
+
+    cmd_buffer.begin(vk::CommandBufferBeginInfo::default())?;
+    cmd_buffer.pipeline_barrier(
+      vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+      vk::PipelineStageFlags::TRANSFER,
+      vk::DependencyFlags::BY_REGION,
+      &[],
+      &[],
+      &[vk::ImageMemoryBarrier::default()
+        .image(image)
+        .subresource_range(
+          vk::ImageSubresourceRange::default()
+            .aspect_mask(vk::ImageAspectFlags::COLOR)
+            .base_mip_level(0)
+            .level_count(1)
+            .base_array_layer(0)
+            .layer_count(1),
         )
-        .map_err(|e| format!("at creating command buffer: {e}"))?[0];
+        .src_access_mask(vk::AccessFlags::NONE)
+        .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+        .old_layout(vk::ImageLayout::UNDEFINED)
+        .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+        .src_queue_family_index(self.vk_context.transfer_q_idx)
+        .dst_queue_family_index(self.vk_context.transfer_q_idx)],
+    );
+    cmd_buffer.copy_buffer_to_image(
+      stage_buffer,
+      image,
+      vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+      &[vk::BufferImageCopy::default()
+        .image_subresource(
+          vk::ImageSubresourceLayers::default()
+            .aspect_mask(vk::ImageAspectFlags::COLOR)
+            .mip_level(0)
+            .base_array_layer(0)
+            .layer_count(1),
+        )
+        .image_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
+        .image_extent(
+          vk::Extent3D::default().width(image_info.width()).height(image_info.height()).depth(1),
+        )],
+    );
+    cmd_buffer.pipeline_barrier(
+      vk::PipelineStageFlags::TRANSFER,
+      vk::PipelineStageFlags::TRANSFER,
+      vk::DependencyFlags::BY_REGION,
+      &[],
+      &[],
+      &[vk::ImageMemoryBarrier::default()
+        .image(image)
+        .subresource_range(
+          vk::ImageSubresourceRange::default()
+            .aspect_mask(vk::ImageAspectFlags::COLOR)
+            .base_mip_level(0)
+            .level_count(1)
+            .base_array_layer(0)
+            .layer_count(1),
+        )
+        .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+        .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
+        .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+        .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+        .src_queue_family_index(self.vk_context.transfer_q_idx)
+        .dst_queue_family_index(self.vk_context.transfer_q_idx)],
+    );
+    cmd_buffer.end()?;
 
-      self
-        .vk_context
-        .device
-        .begin_command_buffer(cmd_buffer, &vk::CommandBufferBeginInfo::default())
-        .map_err(|e| format!("at starting command buffer: {e}"))?;
-
-      self.vk_context.device.cmd_pipeline_barrier(
-        cmd_buffer,
-        vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-        vk::PipelineStageFlags::TRANSFER,
-        vk::DependencyFlags::BY_REGION,
-        &[],
-        &[],
-        &[vk::ImageMemoryBarrier::default()
-          .image(image)
-          .subresource_range(
-            vk::ImageSubresourceRange::default()
-              .aspect_mask(vk::ImageAspectFlags::COLOR)
-              .base_mip_level(0)
-              .level_count(1)
-              .base_array_layer(0)
-              .layer_count(1),
-          )
-          .src_access_mask(vk::AccessFlags::NONE)
-          .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-          .old_layout(vk::ImageLayout::UNDEFINED)
-          .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-          .src_queue_family_index(self.vk_context.transfer_q_idx)
-          .dst_queue_family_index(self.vk_context.transfer_q_idx)],
-      );
-      self.vk_context.device.cmd_copy_buffer_to_image(
-        cmd_buffer,
-        stage_buffer,
-        image,
-        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-        &[vk::BufferImageCopy::default()
-          .image_subresource(
-            vk::ImageSubresourceLayers::default()
-              .aspect_mask(vk::ImageAspectFlags::COLOR)
-              .mip_level(0)
-              .base_array_layer(0)
-              .layer_count(1),
-          )
-          .image_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
-          .image_extent(
-            vk::Extent3D::default().width(image_info.width()).height(image_info.height()).depth(1),
-          )],
-      );
-      self.vk_context.device.cmd_pipeline_barrier(
-        cmd_buffer,
-        vk::PipelineStageFlags::TRANSFER,
-        vk::PipelineStageFlags::TRANSFER,
-        vk::DependencyFlags::BY_REGION,
-        &[],
-        &[],
-        &[vk::ImageMemoryBarrier::default()
-          .image(image)
-          .subresource_range(
-            vk::ImageSubresourceRange::default()
-              .aspect_mask(vk::ImageAspectFlags::COLOR)
-              .base_mip_level(0)
-              .level_count(1)
-              .base_array_layer(0)
-              .layer_count(1),
-          )
-          .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-          .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
-          .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-          .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-          .src_queue_family_index(self.vk_context.transfer_q_idx)
-          .dst_queue_family_index(self.vk_context.transfer_q_idx)],
-      );
-
-      self
-        .vk_context
-        .device
-        .end_command_buffer(cmd_buffer)
-        .map_err(|e| format!("at ending command buffer: {e}"))?;
-
-      let upload_fence = self
-        .vk_context
-        .device
-        .create_fence(&vk::FenceCreateInfo::default(), None)
-        .map_err(|e| format!("at creating fence: {e}"))?;
+    unsafe {
+      let upload_fence = self.vk_context.create_ad_fence()?;
 
       self
         .vk_context
         .device
         .queue_submit(
           self.vk_context.transfer_q,
-          &[vk::SubmitInfo::default().command_buffers(&[cmd_buffer])],
-          upload_fence,
+          &[vk::SubmitInfo::default().command_buffers(&[cmd_buffer.inner])],
+          upload_fence.inner,
         )
         .map_err(|e| format!("at copying data to image: {e}"))?;
 
       self
         .vk_context
         .device
-        .wait_for_fences(&[upload_fence], true, u64::MAX)
+        .wait_for_fences(&[upload_fence.inner], true, u64::MAX)
         .inspect_err(|e| println!("{e}"))
         .map_err(|e| format!("at waiting for fence: {e}"))?;
-      self.vk_context.device.destroy_fence(upload_fence, None);
       self.vk_context.device.destroy_buffer(stage_buffer, None);
     }
 
@@ -273,9 +245,5 @@ impl TransferManager {
 }
 
 impl Drop for TransferManager {
-  fn drop(&mut self) {
-    unsafe {
-      self.vk_context.device.destroy_command_pool(self.cmd_pool, None);
-    }
-  }
+  fn drop(&mut self) {}
 }

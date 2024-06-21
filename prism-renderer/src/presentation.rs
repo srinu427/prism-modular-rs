@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use vk_context::auto_drop_wrappers::{AdFence, AdSemaphore};
+use vk_context::auto_drop_wrappers::{AdCommandBuffer, AdCommandPool, AdFence, AdSemaphore};
 use vk_context::helpers::PWImage;
 use vk_context::{ash::khr, ash::vk, VkContext};
 
@@ -19,8 +19,8 @@ pub struct PresentManager {
   vk_context: Arc<VkContext>,
   swapchain_device: khr::swapchain::Device,
   surface: vk::SurfaceKHR,
-  cmd_pool: vk::CommandPool,
-  cmd_buffers: Vec<vk::CommandBuffer>,
+  cmd_buffers: Vec<AdCommandBuffer>,
+  cmd_pool: AdCommandPool,
   acquire_image_sem_list: Vec<AdSemaphore>,
   image_blit_sem_list: Vec<AdSemaphore>,
   image_blit_fences: Vec<AdFence>,
@@ -145,27 +145,17 @@ impl PresentManager {
 
     let cmd_pool = unsafe {
       vk_context
-        .device
-        .create_command_pool(
-          &vk::CommandPoolCreateInfo::default()
+        .create_ad_command_pool(
+          vk::CommandPoolCreateInfo::default()
             .queue_family_index(vk_context.graphics_q_idx)
             .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER),
-          None,
         )
-        .map_err(|e| PresentManagerError::InitError(format!("at command pool create: {e}")))?
+        .map_err(|e| PresentManagerError::InitError(format!("{e}")))?
     };
 
-    let cmd_buffers = unsafe {
-      vk_context
-        .device
-        .allocate_command_buffers(
-          &vk::CommandBufferAllocateInfo::default()
-            .command_pool(cmd_pool)
-            .command_buffer_count(3)
-            .level(vk::CommandBufferLevel::PRIMARY),
-        )
-        .map_err(|e| PresentManagerError::InitError(format!("at cmd buffer allocation: {e}")))?
-    };
+    let cmd_buffers = cmd_pool
+      .allocate_command_buffers(vk::CommandBufferLevel::PRIMARY, 3)
+      .map_err(|e| PresentManagerError::InitError(format!("{e}")))?;
 
     let mut acquire_image_semaphores = Vec::with_capacity(3);
     for _ in 0..3 {
@@ -307,34 +297,41 @@ impl PresentManager {
       }
 
       self
-        .vk_context
-        .create_cmd_buffer_recorder(self.cmd_buffers[image_idx])
+        .cmd_buffers[image_idx]
         .begin(vk::CommandBufferBeginInfo::default())
-        .map_err(|e| PresentManagerError::PresentError(format!("at blit cmd record begin: {e}")))?
+        .map_err(|e| PresentManagerError::PresentError(format!("at blit cmd record begin: {e}")))?;
+      self
+        .cmd_buffers[image_idx]
         .pipeline_barrier(
           vk::PipelineStageFlags::BOTTOM_OF_PIPE,
           vk::PipelineStageFlags::TRANSFER,
           vk::DependencyFlags::BY_REGION,
-          vec![],
-          vec![],
-          vec![barrier_before_blit],
-        )
+          &[],
+          &[],
+          &[barrier_before_blit],
+        );
+      self
+        .cmd_buffers[image_idx]
         .blit_image(
           src_image.inner,
           vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
           self.images[image_idx].inner,
           vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-          vec![blit_region],
+          &[blit_region],
           filter,
-        )
+        );
+      self
+        .cmd_buffers[image_idx]
         .pipeline_barrier(
           vk::PipelineStageFlags::TRANSFER,
           vk::PipelineStageFlags::BOTTOM_OF_PIPE,
           vk::DependencyFlags::BY_REGION,
-          vec![],
-          vec![],
-          vec![barrier_after_blit],
-        )
+          &[],
+          &[],
+          &[barrier_after_blit],
+        );
+      self
+        .cmd_buffers[image_idx]
         .end()
         .map_err(|e| PresentManagerError::PresentError(format!("at blit cmd record end: {e}")))?;
 
@@ -346,7 +343,7 @@ impl PresentManager {
         .queue_submit(
           self.vk_context.graphics_q,
           &[vk::SubmitInfo::default()
-            .command_buffers(&[self.cmd_buffers[image_idx]])
+            .command_buffers(&[self.cmd_buffers[image_idx].inner])
             .wait_semaphores(&wait_for[..])
             .signal_semaphores(&[self.image_blit_sem_list[image_idx].inner])
             .wait_dst_stage_mask(
@@ -394,7 +391,6 @@ impl Drop for PresentManager {
   fn drop(&mut self) {
     self.wait_for_present();
     unsafe {
-      self.vk_context.device.destroy_command_pool(self.cmd_pool, None);
       self.swapchain_device.destroy_swapchain(self.swapchain, None);
       self.vk_context.vk_loaders.surface_driver.destroy_surface(self.surface, None);
     }

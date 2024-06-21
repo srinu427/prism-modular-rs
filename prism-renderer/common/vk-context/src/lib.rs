@@ -11,11 +11,12 @@ pub use ash;
 use ash::ext;
 use ash::khr;
 use ash::vk;
-use auto_drop_wrappers::{ADRenderPassBuilder, AdFence, AdSemaphore};
+use auto_drop_wrappers::{AdFence, AdSemaphore};
 pub use gpu_allocator;
 use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
 pub use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
-use crate::helpers::CommandBufferRecorder;
+use crate::auto_drop_wrappers::AdCommandPool;
+use crate::helpers::ADRenderPassBuilder;
 
 pub struct VkLoaders {
   pub surface_driver: khr::surface::Instance,
@@ -236,15 +237,21 @@ impl VkContext {
     }
   }
 
+  pub fn create_ad_command_pool(&self, info: vk::CommandPoolCreateInfo) -> Result<AdCommandPool, String> {
+    let cmd_pool = unsafe {
+      self
+        .device
+        .create_command_pool(&info, None, )
+        .map_err(|e| format!("at cmd pool create: {e}"))?
+    };
+    Ok(AdCommandPool { device: Arc::clone(&self.device), inner: cmd_pool })
+  }
+
   pub fn create_ad_render_pass_builder(
     &self,
     flags: vk::RenderPassCreateFlags,
   ) -> ADRenderPassBuilder {
     ADRenderPassBuilder::new(Arc::clone(&self.device), flags)
-  }
-
-  pub fn create_cmd_buffer_recorder(&self, cmd_buffer: vk::CommandBuffer) -> CommandBufferRecorder {
-    CommandBufferRecorder::new(Arc::clone(&self.device), cmd_buffer)
   }
 }
 
