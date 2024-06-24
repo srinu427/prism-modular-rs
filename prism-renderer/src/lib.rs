@@ -2,6 +2,7 @@ mod presentation;
 
 use presentation::PresentManager;
 use presentation::PresentManagerError;
+use vk_context::auto_drop_wrappers::AdAllocatedImage;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use transfer_manager::TransferManager;
@@ -17,8 +18,7 @@ use vk_context::gpu_allocator::MemoryLocation;
 pub struct Renderer {
   mesh_render_pass: ADRenderPass,
   material: PbrMaterial,
-  attachment_image: PWImage,
-  attachment_image_allocation: Allocation,
+  attachment_image: AdAllocatedImage,
   attachment_image_view: vk::ImageView,
   mesh_frame_buffer: vk::Framebuffer,
   render_cmd_buffer: AdCommandBuffer,
@@ -98,61 +98,28 @@ impl Renderer {
       )
       .build()?;
 
-    let (attachment_image, attachment_image_allocation) = unsafe {
-      let image = vk_context
-        .device
-        .create_image(
-          &vk::ImageCreateInfo::default()
-            .image_type(vk::ImageType::TYPE_2D)
-            .format(vk::Format::R8G8B8A8_UNORM)
-            .usage(vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_SRC)
-            .initial_layout(vk::ImageLayout::UNDEFINED)
-            .sharing_mode(vk::SharingMode::EXCLUSIVE)
-            .samples(vk::SampleCountFlags::TYPE_1)
-            .tiling(vk::ImageTiling::OPTIMAL)
-            .mip_levels(1)
-            .array_layers(1)
-            .extent(
-              vk::Extent3D::default()
-                .width(1280)
-                .height(720)
-                .depth(1),
-            ),
-          None,
-        )
-        .map_err(|e| format!("at creating attachment image: {e}"))?;
-
-      let tex_mem_req = vk_context.device.get_image_memory_requirements(image);
-
-      let allocation = allocator
-        .lock()
-        .map_err(|e| format!("at getting allocator lock: {e}"))?
-        .allocate(&AllocationCreateDesc {
-          name: "attachment_image_allocation",
-          requirements: tex_mem_req,
-          location: MemoryLocation::GpuOnly,
-          linear: false,
-          allocation_scheme: AllocationScheme::GpuAllocatorManaged,
-        })
-        .map_err(|e| format!("at allocating mem: {e}"))?;
-
-      vk_context
-        .device
-        .bind_image_memory(image, allocation.memory(), allocation.offset())
-        .map_err(|e| format!("at attachment image mem bind: {e}"))?;
-
-      let pw_image = PWImage {
-        inner: image,
-        format: vk::Format::R8G8B8A8_UNORM,
-        _type: vk::ImageType::TYPE_2D,
-        resolution: vk::Extent3D {
-          width: 1280,
-          height: 720,
-          depth: 1,
-        },
-      };
-      (pw_image, allocation)
-    };
+    let attachment_image = AdAllocatedImage::new(
+      Arc::clone(&vk_context.device),
+      Arc::clone(&allocator),
+      "attachment_image_allocation",
+      vk::ImageCreateInfo::default()
+        .image_type(vk::ImageType::TYPE_2D)
+        .format(vk::Format::R8G8B8A8_UNORM)
+        .usage(vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_SRC)
+        .initial_layout(vk::ImageLayout::UNDEFINED)
+        .sharing_mode(vk::SharingMode::EXCLUSIVE)
+        .samples(vk::SampleCountFlags::TYPE_1)
+        .tiling(vk::ImageTiling::OPTIMAL)
+        .mip_levels(1)
+        .array_layers(1)
+        .extent(
+          vk::Extent3D::default()
+            .width(1280)
+            .height(720)
+            .depth(1),
+        ),
+        MemoryLocation::GpuOnly
+    )?;
 
     let attachment_image_view = unsafe {
       vk_context
@@ -212,7 +179,6 @@ impl Renderer {
       allocator,
       allocation,
       attachment_image,
-      attachment_image_allocation,
       attachment_image_view,
       mesh_frame_buffer,
       render_cmd_pool,
@@ -315,7 +281,6 @@ impl Drop for Renderer {
       self.vk_context.device.destroy_image(self.image.inner, None);
       self.vk_context.device.destroy_framebuffer(self.mesh_frame_buffer, None);
       self.vk_context.device.destroy_image_view(self.attachment_image_view, None);
-      self.vk_context.device.destroy_image(self.attachment_image.inner, None);
     }
   }
 }

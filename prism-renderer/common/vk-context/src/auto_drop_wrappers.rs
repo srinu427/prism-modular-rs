@@ -1,5 +1,6 @@
 use ash::vk;
-use std::sync::Arc;
+use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocationScheme, Allocator};
+use std::sync::{Arc, Mutex};
 
 pub struct AdSemaphore {
   pub(crate) device: Arc<ash::Device>,
@@ -212,5 +213,67 @@ impl Drop for ADRenderPass {
     unsafe {
       self.device.destroy_render_pass(self.inner, None);
     }
+  }
+}
+
+pub struct AdAllocatedImage {
+  pub inner: vk::Image,
+  pub format: vk::Format,
+  pub _type: vk::ImageType,
+  pub resolution: vk::Extent3D,
+  pub name: String,
+  pub(crate) device: Arc<ash::Device>,
+  allocator: Arc<Mutex<Allocator>>,
+  allocation: Option<Allocation>,
+}
+
+impl AdAllocatedImage {
+  pub fn new(
+    device: Arc<ash::Device>,
+    allocator: Arc<Mutex<Allocator>>,
+    name: &str,
+    info: vk::ImageCreateInfo,
+    mem_location: gpu_allocator::MemoryLocation,
+  ) -> Result<Self, String> {
+    unsafe {
+      let image = device.create_image(&info, None).map_err(|e| format!("at vk image create: {e}"))?;
+      let allocation = allocator
+        .lock()
+        .map_err(|e| format!("at getting allocator lock: {e}"))?
+        .allocate(&AllocationCreateDesc {
+          name,
+          requirements: device.get_image_memory_requirements(image),
+          location: mem_location,
+          linear: false,
+          allocation_scheme: AllocationScheme::GpuAllocatorManaged,
+        })
+        .map_err(|e| format!("at allocating image mem: {e}"))?;
+      device
+        .bind_image_memory(image, allocation.memory(), allocation.offset())
+        .map_err(|e| format!("at image mem bind: {e}"))?;
+      Ok(Self {
+        inner: image,
+        format: info.format,
+        _type: info.image_type,
+        resolution: info.extent,
+        name: name.to_string(),
+        device,
+        allocator,
+        allocation: Some(allocation),
+      })
+    }
+  }
+}
+
+impl Drop for AdAllocatedImage {
+  fn drop(&mut self) {
+    unsafe {
+      self.device.destroy_image(self.inner, None);
+    }
+    let _ = self
+    .allocator
+    .lock()
+    .map(|mut altr| self.allocation.take().map(|altn| altr.free(altn)))
+    .inspect_err(|e| eprintln!("at getting allocator lock while image destroy: {e}"));
   }
 }
