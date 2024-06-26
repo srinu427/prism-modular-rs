@@ -1,12 +1,9 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use vk_context::gpu_allocator::vulkan::{
-  Allocation, AllocationCreateDesc, AllocationScheme, Allocator,
-};
+use vk_context::gpu_allocator::vulkan::Allocator;
 use vk_context::gpu_allocator::MemoryLocation;
-use vk_context::helpers::PWImage;
-use vk_context::{ash, ash::vk, VkContext};
-use vk_context::auto_drop_wrappers::AdCommandPool;
+use vk_context::{ash::vk, VkContext};
+use vk_context::auto_drop_wrappers::{AdAllocatedBuffer, AdAllocatedImage, AdCommandPool};
 
 pub struct TransferManager {
   cmd_pool: AdCommandPool,
@@ -25,106 +22,54 @@ impl TransferManager {
     Ok(Self { cmd_pool, vk_context })
   }
 
-  pub fn get_arc_device(&self) -> Arc<ash::Device> {
-    Arc::clone(&self.vk_context.device)
-  }
-
   pub fn load_image_from_file(
     &self,
     allocator: Arc<Mutex<Allocator>>,
     path: &Path,
     name: &str,
-  ) -> Result<(PWImage, Allocation), String> {
+  ) -> Result<AdAllocatedImage, String> {
     let image_info = image::open(path).map_err(|e| format!("at loading image file: {e}"))?;
     let image_rgba8 = image_info.to_rgba8();
 
-    let (image, allocation) = unsafe {
-      let image = self
-        .vk_context
-        .device
-        .create_image(
-          &vk::ImageCreateInfo::default()
-            .image_type(vk::ImageType::TYPE_2D)
-            .format(vk::Format::R8G8B8A8_UNORM)
-            .usage(vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::TRANSFER_SRC)
-            .initial_layout(vk::ImageLayout::UNDEFINED)
-            .sharing_mode(vk::SharingMode::EXCLUSIVE)
-            .samples(vk::SampleCountFlags::TYPE_1)
-            .tiling(vk::ImageTiling::OPTIMAL)
-            .mip_levels(1)
-            .array_layers(1)
-            .extent(
-              vk::Extent3D::default()
-                .width(image_info.width())
-                .height(image_info.height())
-                .depth(1),
-            ),
-          None,
-        )
-        .map_err(|e| format!("at creating tex image: {e}"))?;
+    let image = AdAllocatedImage::new(
+      Arc::clone(&self.vk_context.device),
+      Arc::clone(&allocator),
+      name,
+      vk::ImageCreateInfo::default()
+        .image_type(vk::ImageType::TYPE_2D)
+        .format(vk::Format::R8G8B8A8_UNORM)
+        .usage(vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::TRANSFER_SRC)
+        .initial_layout(vk::ImageLayout::UNDEFINED)
+        .sharing_mode(vk::SharingMode::EXCLUSIVE)
+        .samples(vk::SampleCountFlags::TYPE_1)
+        .tiling(vk::ImageTiling::OPTIMAL)
+        .mip_levels(1)
+        .array_layers(1)
+        .extent(
+          vk::Extent3D::default()
+            .width(image_info.width())
+            .height(image_info.height())
+            .depth(1),
+        ),
+        MemoryLocation::GpuOnly
+    )
+      .map_err(|e| format!("at creating tex ad image: {e}"))?;
 
-      let tex_mem_req = self.vk_context.device.get_image_memory_requirements(image);
+    let mut stage_buffer = AdAllocatedBuffer::new(
+      Arc::clone(&self.vk_context.device),
+      Arc::clone(&allocator),
+      name,
+      vk::BufferCreateInfo::default()
+        .usage(vk::BufferUsageFlags::TRANSFER_SRC)
+        .size(image_rgba8.len() as vk::DeviceSize),
+      MemoryLocation::CpuToGpu
+    )
+      .map_err(|e| format!("at creating staging buffer: {e}"))?;
 
-      let allocation = allocator
-        .lock()
-        .map_err(|e| format!("at getting allocator lock: {e}"))?
-        .allocate(&AllocationCreateDesc {
-          name,
-          requirements: tex_mem_req,
-          location: MemoryLocation::GpuOnly,
-          linear: false,
-          allocation_scheme: AllocationScheme::GpuAllocatorManaged,
-        })
-        .map_err(|e| format!("at allocating mem: {e}"))?;
-
-      self
-        .vk_context
-        .device
-        .bind_image_memory(image, allocation.memory(), allocation.offset())
-        .map_err(|e| format!("at tex image mem bind: {e}"))?;
-
-      (image, allocation)
-    };
-
-    let (stage_buffer, mut stage_buffer_allocation) = unsafe {
-      let stage_buffer = self
-        .vk_context
-        .device
-        .create_buffer(
-          &vk::BufferCreateInfo::default()
-            .usage(vk::BufferUsageFlags::TRANSFER_SRC)
-            .size(image_rgba8.len() as vk::DeviceSize),
-          None,
-        )
-        .map_err(|e| format!("at creating staging buffer: {e}"))?;
-      let stage_buffer_mem_req =
-        self.vk_context.device.get_buffer_memory_requirements(stage_buffer);
-
-      let stage_buffer_allocation = allocator
-        .lock()
-        .map_err(|e| format!("at getting allocator lock: {e}"))?
-        .allocate(&AllocationCreateDesc {
-          name: &format!("{name}_stage_buffer"),
-          requirements: stage_buffer_mem_req,
-          location: MemoryLocation::CpuToGpu,
-          linear: false,
-          allocation_scheme: AllocationScheme::GpuAllocatorManaged,
-        })
-        .map_err(|e| format!("at gpu mem alloc: {e}"))?;
-      self
-        .vk_context
-        .device
-        .bind_buffer_memory(
-          stage_buffer,
-          stage_buffer_allocation.memory(),
-          stage_buffer_allocation.offset(),
-        )
-        .map_err(|e| format!("at stage buffer mem bind: {e}"))?;
-
-      (stage_buffer, stage_buffer_allocation)
-    };
-
-    stage_buffer_allocation
+    stage_buffer
+      .allocation
+      .as_mut()
+      .ok_or("stage buffer not allocated, hmmm".to_string())?
       .mapped_slice_mut()
       .ok_or("at mapping stage buffer memory to CPU".to_string())?
       .copy_from_slice(image_rgba8.as_raw().as_slice());
@@ -142,7 +87,7 @@ impl TransferManager {
       &[],
       &[],
       &[vk::ImageMemoryBarrier::default()
-        .image(image)
+        .image(image.inner)
         .subresource_range(
           vk::ImageSubresourceRange::default()
             .aspect_mask(vk::ImageAspectFlags::COLOR)
@@ -159,8 +104,8 @@ impl TransferManager {
         .dst_queue_family_index(self.vk_context.transfer_q_idx)],
     );
     cmd_buffer.copy_buffer_to_image(
-      stage_buffer,
-      image,
+      stage_buffer.inner,
+      image.inner,
       vk::ImageLayout::TRANSFER_DST_OPTIMAL,
       &[vk::BufferImageCopy::default()
         .image_subresource(
@@ -182,7 +127,7 @@ impl TransferManager {
       &[],
       &[],
       &[vk::ImageMemoryBarrier::default()
-        .image(image)
+        .image(image.inner)
         .subresource_range(
           vk::ImageSubresourceRange::default()
             .aspect_mask(vk::ImageAspectFlags::COLOR)
@@ -219,28 +164,8 @@ impl TransferManager {
         .wait_for_fences(&[upload_fence.inner], true, u64::MAX)
         .inspect_err(|e| println!("{e}"))
         .map_err(|e| format!("at waiting for fence: {e}"))?;
-      self.vk_context.device.destroy_buffer(stage_buffer, None);
     }
-
-    allocator
-      .lock()
-      .map_err(|e| format!("at getting allocator lock: {e}"))?
-      .free(stage_buffer_allocation)
-      .map_err(|e| format!("at freeing stage buffer memory: {e}"))?;
-
-    Ok((
-      PWImage {
-        inner: image,
-        format: vk::Format::R8G8B8A8_UNORM,
-        _type: vk::ImageType::TYPE_2D,
-        resolution: vk::Extent3D {
-          width: image_info.width(),
-          height: image_info.height(),
-          depth: 1,
-        },
-      },
-      allocation,
-    ))
+    Ok(image)
   }
 }
 

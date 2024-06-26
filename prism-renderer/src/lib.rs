@@ -9,8 +9,7 @@ use transfer_manager::TransferManager;
 use vert_mesh_pbr::structs::PbrMaterial;
 use vk_context::ash::vk;
 use vk_context::auto_drop_wrappers::{AdCommandBuffer, AdCommandPool, ADRenderPass};
-use vk_context::gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocationScheme, Allocator};
-use vk_context::helpers::PWImage;
+use vk_context::gpu_allocator::vulkan::Allocator;
 use vk_context::VkLoaders;
 use vk_context::{HasDisplayHandle, HasWindowHandle};
 use vk_context::gpu_allocator::MemoryLocation;
@@ -23,8 +22,7 @@ pub struct Renderer {
   mesh_frame_buffer: vk::Framebuffer,
   render_cmd_buffer: AdCommandBuffer,
   render_cmd_pool: AdCommandPool,
-  image: PWImage,
-  allocation: Allocation,
+  image: AdAllocatedImage,
   allocator: Arc<Mutex<Allocator>>,
   transfer_manager: TransferManager,
   present_manager: PresentManager,
@@ -52,7 +50,7 @@ impl Renderer {
     let allocator = Arc::new(Mutex::new(vk_context.create_allocator()?));
 
     let image_path = PathBuf::from("./tile_tex.png");
-    let (image, allocation) =
+    let image =
       transfer_manager.load_image_from_file(Arc::clone(&allocator), &image_path, "display_img")?;
 
     let material = PbrMaterial::new(
@@ -177,7 +175,6 @@ impl Renderer {
       transfer_manager,
       image,
       allocator,
-      allocation,
       attachment_image,
       attachment_image_view,
       mesh_frame_buffer,
@@ -245,7 +242,7 @@ impl Renderer {
     self.render_cmd_buffer.end()?;
 
     match self.present_manager.present_image_content(
-      self.image,
+      &self.image,
       vk::ImageSubresourceLayers::default()
         .aspect_mask(vk::ImageAspectFlags::COLOR)
         .mip_level(0)
@@ -278,7 +275,6 @@ impl Drop for Renderer {
   fn drop(&mut self) {
     unsafe {
       self.present_manager.wait_for_present();
-      self.vk_context.device.destroy_image(self.image.inner, None);
       self.vk_context.device.destroy_framebuffer(self.mesh_frame_buffer, None);
       self.vk_context.device.destroy_image_view(self.attachment_image_view, None);
     }

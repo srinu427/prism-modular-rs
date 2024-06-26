@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use vk_context::auto_drop_wrappers::{AdCommandBuffer, AdCommandPool, AdFence, AdSemaphore};
+use vk_context::auto_drop_wrappers::{AdAllocatedImage, AdCommandBuffer, AdCommandPool, AdFence, AdSemaphore};
 use vk_context::helpers::PWImage;
 use vk_context::{ash::khr, ash::vk, VkContext};
 
@@ -143,15 +143,13 @@ impl PresentManager {
     let swapchain_device =
       khr::swapchain::Device::new(&vk_context.vk_loaders.vk_driver, &vk_context.device);
 
-    let cmd_pool = unsafe {
-      vk_context
-        .create_ad_command_pool(
-          vk::CommandPoolCreateInfo::default()
-            .queue_family_index(vk_context.graphics_q_idx)
-            .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER),
-        )
-        .map_err(|e| PresentManagerError::InitError(format!("{e}")))?
-    };
+    let cmd_pool = vk_context
+      .create_ad_command_pool(
+        vk::CommandPoolCreateInfo::default()
+          .queue_family_index(vk_context.graphics_q_idx)
+          .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER),
+      )
+      .map_err(|e| PresentManagerError::InitError(format!("{e}")))?;
 
     let cmd_buffers = cmd_pool
       .allocate_command_buffers(vk::CommandBufferLevel::PRIMARY, 3)
@@ -206,7 +204,7 @@ impl PresentManager {
    */
   pub fn present_image_content(
     &mut self,
-    src_image: PWImage,
+    src_image: &AdAllocatedImage,
     src_subresource: vk::ImageSubresourceLayers,
     src_image_range: [vk::Offset3D; 2],
     filter: vk::Filter,

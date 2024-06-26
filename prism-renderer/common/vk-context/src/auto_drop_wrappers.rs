@@ -277,3 +277,61 @@ impl Drop for AdAllocatedImage {
     .inspect_err(|e| eprintln!("at getting allocator lock while image destroy: {e}"));
   }
 }
+
+pub struct AdAllocatedBuffer {
+  pub inner: vk::Buffer,
+  pub size: vk::DeviceSize,
+  pub name: String,
+  pub(crate) device: Arc<ash::Device>,
+  allocator: Arc<Mutex<Allocator>>,
+  pub allocation: Option<Allocation>,
+}
+
+impl AdAllocatedBuffer {
+  pub fn new(
+    device: Arc<ash::Device>,
+    allocator: Arc<Mutex<Allocator>>,
+    name: &str,
+    info: vk::BufferCreateInfo,
+    mem_location: gpu_allocator::MemoryLocation,
+  ) -> Result<Self, String> {
+    unsafe {
+      let buffer = device.create_buffer(&info, None).map_err(|e| format!("at vk buffer create: {e}"))?;
+      let allocation = allocator
+        .lock()
+        .map_err(|e| format!("at getting allocator lock: {e}"))?
+        .allocate(&AllocationCreateDesc {
+          name,
+          requirements: device.get_buffer_memory_requirements(buffer),
+          location: mem_location,
+          linear: false,
+          allocation_scheme: AllocationScheme::GpuAllocatorManaged,
+        })
+        .map_err(|e| format!("at allocating buffer mem: {e}"))?;
+      device
+        .bind_buffer_memory(buffer, allocation.memory(), allocation.offset())
+        .map_err(|e| format!("at buffer mem bind: {e}"))?;
+      Ok(Self {
+        inner: buffer,
+        size: info.size,
+        name: name.to_string(),
+        device,
+        allocator,
+        allocation: Some(allocation),
+      })
+    }
+  }
+}
+
+impl Drop for AdAllocatedBuffer {
+  fn drop(&mut self) {
+    unsafe {
+      self.device.destroy_buffer(self.inner, None);
+    }
+    let _ = self
+    .allocator
+    .lock()
+    .map(|mut altr| self.allocation.take().map(|altn| altr.free(altn)))
+    .inspect_err(|e| eprintln!("at getting allocator lock while buffer destroy: {e}"));
+  }
+}
